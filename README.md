@@ -1,6 +1,6 @@
-# Support Ticket RAG Assistant — Phase 1
+# Support Ticket RAG Assistant
 
-This first phase is a semantic-search foundation for a future support-resolution RAG application. It does **not** use an LLM. Given a new support issue, it returns the three most similar historical tickets.
+This project begins with semantic search and now includes a Phase 2 local RAG prototype. Given a new support issue, it retrieves similar historical tickets and asks a local LLM to produce an evidence-grounded suggested resolution.
 
 ## What each file does
 
@@ -9,6 +9,7 @@ This first phase is a semantic-search foundation for a future support-resolution
 | `data/tickets.csv` | Thirty synthetic historical tickets used as the retrieval corpus. |
 | `ingest.py` | Reads the CSV, turns each row into an embedding-ready document, and stores the vectors in ChromaDB. |
 | `search.py` | Embeds a new issue and retrieves the nearest historical tickets. |
+| `rag.py` | Retrieves the nearest tickets and sends them as evidence to a local Ollama model. |
 | `requirements.txt` | Python dependencies for the retrieval prototype. |
 
 ## Retrieval flow
@@ -71,11 +72,74 @@ python ingest.py --reset
 - **LlamaIndex** keeps ingestion and retrieval code modular, while leaving room for a later RAG layer.
 - **No LLM in Phase 1** makes retrieval quality easy to inspect and evaluate before generated answers add another source of error.
 
+## Phase 2: local RAG with Ollama
+
+Phase 2 preserves the tested semantic retrieval path. `rag.py` first retrieves the top three tickets, then provides only those tickets and the user issue to a local LLM. The model is instructed to cite the ticket IDs it used and to state when evidence is insufficient.
+
+```text
+User issue → semantic retrieval → top 3 tickets → Ollama → grounded response
+```
+
+### Install Ollama
+
+Install Ollama for Windows, then download the small local model used by default:
+
+```bash
+ollama pull llama3.2:3b
+```
+
+No API key or cloud account is needed. The model download requires several gigabytes of local disk space.
+
+### Run a grounded resolution
+
+First create the ticket index if it does not already exist:
+
+```bash
+python ingest.py
+```
+
+Then run:
+
+```bash
+python rag.py "Customer cannot log in after resetting their password"
+```
+
+To use another installed Ollama model for an experiment:
+
+```bash
+python rag.py "Customer cannot log in after resetting their password" --model <model-name>
+```
+
+The app prints the generated response and the retrieved ticket IDs with similarity scores. This lets you inspect whether the answer is supported by its evidence.
+
+### Manual RAG behavior checks
+
+These checks validate both the retrieval path and the grounding behavior of the
+generated response. They are qualitative checks, not yet a formal evaluation set.
+
+| Scenario | Query | Expected behavior | Result |
+| --- | --- | --- | --- |
+| Direct evidence | `Customer cannot log in after resetting their password` | Identify the stale password-reset session, recommend the SR001 resolution, and cite only `SR001`. | Passed |
+| Unsupported question | `How do I change my organization's logo?` | State that the retrieved evidence is insufficient and do not invent a resolution or ticket citation. | Passed |
+
+### Grounding improvement
+
+The first password-reset response retrieved the correct ticket but cited other,
+merely related authentication tickets and described the direct evidence as uncertain.
+The prompt was then strengthened to distinguish direct matches from topical matches,
+require only directly supporting citations, and prevent evidence limitations that
+contradict the retrieved ticket. The corrected response cited `SR001` alone and
+reported no material evidence limitation.
+
+This before-and-after test is an example of **faithfulness**: a RAG response should
+accurately reflect the evidence that was retrieved, not merely produce a plausible
+answer.
+
 ## Next phases (not implemented yet)
 
-1. Use retrieved tickets as evidence for a grounded LLM response.
-2. Add a lightweight Streamlit interface.
-3. Compare retrieval strategies with a labeled evaluation set.
+1. Add a lightweight Streamlit interface.
+2. Compare retrieval strategies with a labeled evaluation set.
+3. Add a hosted-provider implementation for a production deployment comparison.
 
 
 ## Manual retrieval checks

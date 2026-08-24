@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
 
 import chromadb
@@ -16,7 +17,19 @@ COLLECTION_NAME = "support_tickets"
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 
 
-def search(issue: str, top_k: int = 3) -> None:
+@dataclass(frozen=True)
+class RetrievedTicket:
+    """A historical ticket returned by semantic retrieval."""
+
+    ticket_id: str
+    product: str
+    issue: str
+    resolution: str
+    similarity_score: float
+
+
+def retrieve_tickets(issue: str, top_k: int = 3) -> list[RetrievedTicket]:
+    """Return the closest historical tickets without deciding how to display them."""
     client = chromadb.PersistentClient(path=str(CHROMA_PATH))
     try:
         collection = client.get_collection(COLLECTION_NAME)
@@ -29,14 +42,28 @@ def search(issue: str, top_k: int = 3) -> None:
         embed_model=HuggingFaceEmbedding(model_name=EMBEDDING_MODEL),
     )
     results = index.as_retriever(similarity_top_k=top_k).retrieve(issue)
+    return [
+        RetrievedTicket(
+            ticket_id=str(result.node.metadata["ticket_id"]),
+            product=str(result.node.metadata["product"]),
+            issue=str(result.node.metadata["issue"]),
+            resolution=str(result.node.metadata["resolution"]),
+            similarity_score=float(result.score or 0.0),
+        )
+        for result in results
+    ]
+
+
+def search(issue: str, top_k: int = 3) -> None:
+    """Print a readable command-line view of semantic retrieval results."""
+    results = retrieve_tickets(issue, top_k=top_k)
 
     print(f"\nQuery: {issue}\n")
     print(f"Top {len(results)} similar historical tickets:\n")
     for rank, result in enumerate(results, start=1):
-        metadata = result.node.metadata
-        print(f"{rank}. {metadata['ticket_id']} | {metadata['product']} | similarity: {result.score:.3f}")
-        print(f"   Issue: {metadata['issue']}")
-        print(f"   Resolution: {metadata['resolution']}\n")
+        print(f"{rank}. {result.ticket_id} | {result.product} | similarity: {result.similarity_score:.3f}")
+        print(f"   Issue: {result.issue}")
+        print(f"   Resolution: {result.resolution}\n")
 
 
 if __name__ == "__main__":
