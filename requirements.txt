@@ -1,0 +1,8 @@
+pandas>=2.2,<3.0
+# ChromaDB 1.x provides Windows wheels for Python 3.12. ChromaDB 0.6.x
+# falls back to compiling chroma-hnswlib on this platform.
+chromadb>=1.0.20,<2.0
+llama-index-core>=0.12,<0.13
+llama-index-vector-stores-chroma>=0.4,<0.5
+llama-index-embeddings-huggingface>=0.5,<0.6
+sentence-transformers>=3.0,<4.0

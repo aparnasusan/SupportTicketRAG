@@ -1,0 +1,31 @@
+ticket_id,product,issue,resolution
+SR001,Identity Hub,Users cannot sign in after resetting a password,Clear the stale password-reset session and ask the user to sign in with the new password.
+SR002,Identity Hub,Login fails because the account is locked after repeated attempts,Unlock the account in the admin console and have the user retry after fifteen minutes.
+SR003,Identity Hub,User receives an expired authentication token error,Clear browser cookies and request a new session token by signing in again.
+SR004,Identity Hub,Inactive account cannot authenticate despite correct credentials,Reactivate the user account and verify that the assigned role is still valid.
+SR005,Identity Hub,Multi-factor authentication code is rejected,Confirm the device clock is correct then re-enroll the user’s authenticator.
+SR006,Identity Hub,Single sign-on redirects back to the login page,Verify the identity-provider callback URL and refresh the SSO certificate metadata.
+SR007,Billing Portal,Customer payment was declined although the card appears valid,Ask the customer to contact the card issuer and retry after verifying billing address details.
+SR008,Billing Portal,Invoice is missing from the customer billing history,Run the invoice synchronization job and confirm the billing account identifier is correct.
+SR009,Billing Portal,Customer was charged twice for a single subscription renewal,Confirm duplicate transaction IDs then issue a refund for the duplicate charge.
+SR010,Billing Portal,Subscription cancellation request does not take effect,Check for pending invoices then cancel the subscription through the billing administration endpoint.
+SR011,Billing Portal,Customer cannot download a PDF invoice,Regenerate the invoice document and verify the customer has billing-download permission.
+SR012,Billing Portal,Tax total on the invoice is incorrect,Refresh the customer tax profile and regenerate the invoice using the corrected location data.
+SR013,Data Sync,Daily data import completed with zero new records,Verify the source export contains rows and confirm the import date filter uses the expected timezone.
+SR014,Data Sync,CSV upload fails due to an invalid column error,Compare the uploaded headers with the required schema and remove unsupported columns.
+SR015,Data Sync,Records are duplicated after a scheduled synchronization,Enable the source-record deduplication key and rerun the sync for the affected date range.
+SR016,Data Sync,Synchronization job remains queued for several hours,Check worker capacity and restart the stalled queue consumer.
+SR017,Data Sync,Data sync reports success but updates are not visible,Invalidate the application cache and confirm the sync targeted the correct environment.
+SR018,Data Sync,API import fails with a rate-limit response,Reduce batch concurrency and retry using exponential backoff.
+SR019,Analytics Console,Dashboard loads but charts show no data,Confirm the reporting date range and refresh the analytics aggregation job.
+SR020,Analytics Console,Exported report has fewer rows than the dashboard,Check active dashboard filters and ensure the export uses the same timezone and filter criteria.
+SR021,Analytics Console,User cannot access a shared dashboard,Grant the user the dashboard viewer role and verify workspace membership.
+SR022,Analytics Console,Dashboard page times out for a large date range,Limit the query range or schedule the report as an asynchronous export.
+SR023,Analytics Console,Metric total differs from the finance report,Confirm both reports use the same metric definition and data refresh timestamp.
+SR024,Analytics Console,Scheduled report email was not delivered,Check the recipient address and review the email delivery log for suppression or bounce events.
+SR025,Service Monitor,Customer sees a service unavailable error in the application,Check the service status page and restart the unhealthy application instance if an incident is confirmed.
+SR026,Service Monitor,API requests return an internal server error,Review application logs for the request ID and roll back the latest failing deployment if necessary.
+SR027,Service Monitor,Application is slow during peak usage,Inspect CPU and database connection utilization then scale the affected service workers.
+SR028,Service Monitor,Health check fails after a deployment,Verify environment variables and database connectivity then redeploy the corrected configuration.
+SR029,Service Monitor,Webhook notifications are delayed,Inspect the message queue backlog and restart failed notification workers.
+SR030,Service Monitor,Customers receive intermittent connection timeout errors,Check load-balancer health checks and network latency between the application and database.
