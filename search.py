@@ -15,6 +15,9 @@ PROJECT_DIR = Path(__file__).resolve().parent
 CHROMA_PATH = PROJECT_DIR / "storage" / "chroma"
 COLLECTION_NAME = "support_tickets"
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
+# This is an initial abstention threshold, calibrated from the Phase 1/2 manual
+# checks. Revisit it after running a larger labeled evaluation set.
+MIN_RETRIEVAL_SCORE = 0.50
 
 
 @dataclass(frozen=True)
@@ -52,6 +55,16 @@ def retrieve_tickets(issue: str, top_k: int = 3) -> list[RetrievedTicket]:
         )
         for result in results
     ]
+
+
+def has_sufficient_evidence(tickets: list[RetrievedTicket]) -> bool:
+    """Return whether the strongest retrieved record clears the abstention gate.
+
+    The score is a retrieval ranking score, not a probability that a proposed
+    resolution is correct. This gate simply prevents generation when every
+    retrieved record is too weak to treat as useful evidence.
+    """
+    return bool(tickets) and tickets[0].similarity_score >= MIN_RETRIEVAL_SCORE
 
 
 def search(issue: str, top_k: int = 3) -> None:

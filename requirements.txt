@@ -6,3 +6,6 @@ llama-index-core>=0.12,<0.13
 llama-index-vector-stores-chroma>=0.4,<0.5
 llama-index-embeddings-huggingface>=0.5,<0.6
 sentence-transformers>=3.0,<4.0
+# Streamlit 1.53+ uses Starlette internals that conflict with the Starlette
+# version required by the ChromaDB dependency stack in this local setup.
+streamlit>=1.40,<1.53

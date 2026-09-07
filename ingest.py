@@ -18,21 +18,27 @@ COLLECTION_NAME = "support_tickets"
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 
 
+def build_retrieval_text(product: str, issue: str) -> str:
+    """Build the text used to match a new issue to a historical ticket.
+
+    Resolutions are deliberately omitted from the embedding input. A customer
+    describes a symptom, so matching against historical symptoms avoids a
+    resolution's implementation-specific language distorting the ranking.
+    The resolution is still retained as metadata for the RAG response.
+    """
+    return f"Product: {product}\nIssue: {issue}"
+
+
 def ticket_to_document(ticket: pd.Series) -> Document:
-    """Represent one ticket as readable retrieval text plus filterable metadata."""
+    """Represent one ticket as retrieval text plus filterable metadata."""
     # Bracket access is deliberate: `Series.product` is a Pandas method, not
     # the CSV value in the "product" column.
     ticket_id = ticket["ticket_id"]
     product = ticket["product"]
     issue = ticket["issue"]
     resolution = ticket["resolution"]
-    text = (
-        f"Product: {product}\n"
-        f"Issue: {issue}\n"
-        f"Resolution: {resolution}"
-    )
     return Document(
-        text=text,
+        text=build_retrieval_text(product, issue),
         metadata={
             "ticket_id": ticket_id,
             "product": product,

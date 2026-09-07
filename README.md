@@ -10,6 +10,10 @@ This project begins with semantic search and now includes a Phase 2 local RAG pr
 | `ingest.py` | Reads the CSV, turns each row into an embedding-ready document, and stores the vectors in ChromaDB. |
 | `search.py` | Embeds a new issue and retrieves the nearest historical tickets. |
 | `rag.py` | Retrieves the nearest tickets and sends them as evidence to a local Ollama model. |
+| `app.py` | Provides a lightweight Streamlit interface over the tested RAG pipeline. |
+| `evaluate.py` | Runs labeled retrieval checks and reports Recall@K, MRR, and unsupported-query abstention behavior. |
+| `data/evaluation_cases.json` | Version-controlled queries with their expected ticket IDs or an expected abstention. |
+| `docs/INTERVIEW_NOTES.md` | Concise evidence-based talking points and likely interview follow-up answers. |
 | `requirements.txt` | Python dependencies for the retrieval prototype. |
 
 ## Retrieval flow
@@ -24,10 +28,14 @@ Each ticket is represented for embedding as:
 ```text
 Product: <product>
 Issue: <issue>
-Resolution: <resolution>
 ```
 
-This keeps related symptoms and solutions together in the vector representation. The original fields are also stored as metadata, so search results are readable now and can later be filtered by product.
+The embedding represents the support symptom a customer would describe. The ticket
+resolution is retained as metadata and supplied to the LLM only after a ticket is
+retrieved. This keeps implementation-specific resolution text from distorting issue
+matching, while preserving it for the evidence-grounded response. The original fields
+are also stored as metadata, so search results are readable now and can later be
+filtered by product.
 
 ## Setup
 
@@ -135,10 +143,30 @@ This before-and-after test is an example of **faithfulness**: a RAG response sho
 accurately reflect the evidence that was retrieved, not merely produce a plausible
 answer.
 
+## Phase 3: Streamlit interface
+
+Phase 3 adds a small web interface without duplicating the AI logic. `app.py` calls
+the same `generate_resolution()` function used by the command-line application.
+The interface lets a user enter an issue, choose the number of retrieved tickets,
+read the generated response, and inspect the underlying ticket evidence.
+
+Run the app from the project folder:
+
+```bash
+python -m pip install -r requirements.txt
+python -m streamlit run app.py
+```
+
+Streamlit opens the local application in a browser. Ollama must be installed and the
+configured local model must be downloaded before submitting an issue.
+
+The project pins Streamlit below version 1.53 because later releases require newer
+Starlette internals than the local ChromaDB dependency stack provides.
+
 ## Next phases (not implemented yet)
 
-1. Add a lightweight Streamlit interface.
-2. Compare retrieval strategies with a labeled evaluation set.
+1. Compare retrieval strategies with the labeled evaluation set.
+2. Add metadata filtering and/or reranking if the metrics identify weak categories.
 3. Add a hosted-provider implementation for a production deployment comparison.
 
 
@@ -155,3 +183,73 @@ historical incident as the top result.
 
 These checks are qualitative validation only. A later evaluation phase will use
 a larger labeled query set and metrics such as Recall@K and MRR.
+
+## Phase 4: evaluation and retrieval safeguards
+
+Phase 4 adds a small, version-controlled evaluation set and an abstention gate.
+This separates two questions that are easy to conflate in a RAG system:
+
+- **Retrieval quality:** did the expected historical ticket appear in the top results?
+- **Generation safety:** was the retrieved evidence relevant enough to ask the LLM for a resolution?
+
+Run the evaluation after building the index:
+
+```bash
+python evaluate.py
+```
+
+The script uses the same `retrieve_tickets()` function as the command-line tool and
+Streamlit interface. It reports:
+
+- **Recall@3**, the share of supported test queries whose expected ticket occurs in
+  the three retrieved results.
+- **MRR (Mean Reciprocal Rank)**, which rewards placing the expected ticket near the
+  top of the ranking.
+- **Unsupported abstentions**, where the retrieval gate should prevent generation.
+- Per-category MRR, to reveal weaker ticket domains.
+
+`rag.py` now checks `has_sufficient_evidence()` before it calls Ollama. The current
+threshold is `0.50`, selected after the first labeled evaluation. In that run, the
+lowest supported-case top score was `0.562`, while the highest unsupported-case top
+score was `0.480`; `0.50` therefore separated those initial examples. It is a
+retrieval ranking threshold, not a probability that a resolution is correct. Treat
+it as an initial baseline: expand the evaluation set, inspect failures, then adjust
+and document the threshold if the evidence supports doing so.
+
+### Baseline evaluation results
+
+After tuning the threshold, the first evaluation run produced:
+
+| Metric | Result | Interpretation |
+| --- | --- | --- |
+| Recall@3 | 100% (11/11) | Each supported query returned its expected ticket in the first three results. |
+| MRR | 0.939 | Most expected tickets ranked first; one Data Sync case ranked lower. |
+| Unsupported abstentions | 2/2 | Both unsupported queries were blocked before the local LLM was called. |
+
+The Data Sync category has an MRR of `0.778`, whereas the other tested categories
+are `1.000`. The next retrieval experiment should focus on why Data Sync tickets
+are semantically close to one another—for example, by testing more labels, metadata
+filters, or a reranker—rather than changing the threshold again without evidence.
+
+### Retrieval experiment: symptom-focused embeddings
+
+The initial index embedded each ticket's product, issue, and resolution together.
+The first measured experiment instead embeds only product and issue, because customer
+queries describe symptoms rather than internal remediation steps. Resolutions remain
+stored as metadata and are still provided to the LLM after retrieval. Rebuild the
+index and rerun `python evaluate.py` to compare this change against the baseline
+above; do not update the baseline metrics unless the new run is recorded.
+
+The experiment improved the recorded metrics without changing the evaluation cases:
+
+| Metric | Baseline | Symptom-focused embedding | Change |
+| --- | ---: | ---: | ---: |
+| Recall@3 | 100% (11/11) | 100% (11/11) | No loss in coverage |
+| MRR | 0.939 | 0.955 | Improved ranking |
+| Data Sync MRR | 0.778 | 0.833 | Improved ranking |
+| Unsupported abstentions | 2/2 | 2/2 | No loss in safe behavior |
+
+For E006, the expected ticket `SR017` moved from third to second place; it did not
+yet become the top result. This is a meaningful improvement, but not a reason to
+claim the issue is solved. The next evidence-based experiment would be a reranker or
+metadata-aware retrieval, evaluated against a larger Data Sync set.

@@ -10,7 +10,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from search import RetrievedTicket, retrieve_tickets
+from search import RetrievedTicket, has_sufficient_evidence, retrieve_tickets
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434/api/chat"
 DEFAULT_OLLAMA_MODEL = "llama3.2:3b"
@@ -110,12 +110,36 @@ def print_evidence(tickets: list[RetrievedTicket]) -> None:
         print(f"- {ticket.ticket_id} ({ticket.product}, similarity {ticket.similarity_score:.3f})")
 
 
-def run_rag(user_issue: str, top_k: int, model: str) -> None:
+def generate_resolution(
+    user_issue: str, top_k: int, model: str
+) -> tuple[str, list[RetrievedTicket]]:
+    """Retrieve evidence and return a grounded local-model response."""
     tickets = retrieve_tickets(user_issue, top_k=top_k)
     if not tickets:
         raise SystemExit("No historical tickets were retrieved; no answer was generated.")
 
+    if not has_sufficient_evidence(tickets):
+        return (
+            "Likely Cause\n"
+            "The available historical tickets do not provide sufficiently relevant evidence.\n\n"
+            "Suggested Resolution\n"
+            "Do not provide a specific remediation yet. Gather more details or route the issue "
+            "to the appropriate support team.\n\n"
+            "Relevant Historical Ticket IDs\n"
+            "None.\n\n"
+            "Evidence Limitations\n"
+            "The closest retrieved ticket did not meet the minimum relevance threshold, so "
+            "the local model was not asked to generate a resolution.",
+            tickets,
+        )
+
     answer = OllamaClient(model=model).chat(build_messages(user_issue, tickets))
+    return answer, tickets
+
+
+def run_rag(user_issue: str, top_k: int, model: str) -> None:
+    """Run the command-line RAG experience."""
+    answer, tickets = generate_resolution(user_issue, top_k=top_k, model=model)
     print(f"\nUser issue: {user_issue}\n")
     print("Evidence-grounded suggested resolution:\n")
     print(answer)
