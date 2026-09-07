@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -14,6 +15,18 @@ from search import RetrievedTicket, has_sufficient_evidence, retrieve_tickets
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434/api/chat"
 DEFAULT_OLLAMA_MODEL = "llama3.2:3b"
+DEFAULT_TEMPERATURE = 0
+DEFAULT_SEED = 42
+# A high-confidence match can be used as the sole generation source while the
+# complete retrieved list remains available for audit in the API and UI.
+HIGH_CONFIDENCE_SCORE = 0.60
+HIGH_CONFIDENCE_MARGIN = 0.03
+REQUIRED_HEADINGS = (
+    "Likely Cause",
+    "Suggested Resolution",
+    "Relevant Historical Ticket IDs",
+    "Evidence Limitations",
+)
 
 
 @dataclass
@@ -29,7 +42,13 @@ class OllamaClient:
 
     def chat(self, messages: list[dict[str, str]]) -> str:
         payload = json.dumps(
-            {"model": self.model, "messages": messages, "stream": False}
+            {
+                "model": self.model,
+                "messages": messages,
+                "stream": False,
+                # Stable local generation makes quality checks reproducible.
+                "options": {"temperature": DEFAULT_TEMPERATURE, "seed": DEFAULT_SEED},
+            }
         ).encode("utf-8")
         request = Request(
             self.url,
@@ -71,6 +90,27 @@ def format_evidence(tickets: list[RetrievedTicket]) -> str:
     )
 
 
+def select_generation_evidence(tickets: list[RetrievedTicket]) -> list[RetrievedTicket]:
+    """Select the evidence sent to the LLM without hiding retrieved alternatives.
+
+    When the strongest record passes the high-confidence score and clears the
+    runner-up by the configured margin, it is the sole source supplied to the
+    model. This prevents merely related records from being cited as if they were
+    direct support. Ambiguous retrievals continue to provide all candidates.
+    """
+    if not tickets:
+        return []
+
+    strongest = tickets[0]
+    runner_up_score = tickets[1].similarity_score if len(tickets) > 1 else 0.0
+    if (
+        strongest.similarity_score >= HIGH_CONFIDENCE_SCORE
+        and strongest.similarity_score - runner_up_score >= HIGH_CONFIDENCE_MARGIN
+    ):
+        return [strongest]
+    return tickets
+
+
 def build_messages(user_issue: str, tickets: list[RetrievedTicket]) -> list[dict[str, str]]:
     """Build a grounding-first prompt for the local LLM."""
     system_prompt = """You are a technical support resolution assistant.
@@ -85,6 +125,9 @@ Follow these evidence rules:
   Do not cite tickets merely because they are topically related.
 - In Evidence Limitations, name only a genuine gap in the retrieved evidence.
   Never claim a limitation that contradicts a ticket's issue or resolution.
+- Never say there is no direct evidence when you cite a ticket as direct support.
+  If a ticket directly supports the resolution, identify only that ticket rather
+  than adding merely related tickets.
 - If a direct matching ticket exists, write: "No material limitation in the retrieved
   evidence." Do not add unsupported uncertainty.
 
@@ -102,6 +145,71 @@ Evidence Limitations
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
+
+
+def extract_answer_section(answer: str, heading: str, next_heading: str | None = None) -> str:
+    """Return the text below one required heading in a generated answer."""
+    start = answer.find(heading)
+    if start == -1:
+        return ""
+    start += len(heading)
+    end = answer.find(next_heading, start) if next_heading else len(answer)
+    return answer[start:end if end != -1 else len(answer)].strip()
+
+
+def validate_grounded_answer(answer: str, tickets: list[RetrievedTicket]) -> str | None:
+    """Return a repair reason when a response violates basic evidence constraints.
+
+    This is intentionally narrow. It checks answer structure, prohibits citations
+    outside retrieved evidence, and catches a clear contradiction where an answer
+    cites ticket evidence while claiming that no direct evidence exists. It does
+    not attempt to decide semantic correctness in code.
+    """
+    if any(answer.count(heading) != 1 for heading in REQUIRED_HEADINGS):
+        return "The response must include each required heading exactly once."
+
+    citations = extract_answer_section(
+        answer, "Relevant Historical Ticket IDs", "Evidence Limitations"
+    )
+    cited_ids = set(re.findall(r"\bSR\d{3}\b", citations))
+    retrieved_ids = {ticket.ticket_id for ticket in tickets}
+    if unknown_ids := cited_ids.difference(retrieved_ids):
+        return f"The response cited ticket IDs that were not retrieved: {sorted(unknown_ids)}."
+
+    limitations = extract_answer_section(answer, "Evidence Limitations").lower()
+    contradiction_phrases = ("no direct evidence", "no evidence", "without evidence")
+    if cited_ids and any(phrase in limitations for phrase in contradiction_phrases):
+        return (
+            "The response cites ticket evidence but says there is no direct evidence. "
+            "Make the citation and limitation internally consistent."
+        )
+    return None
+
+
+def build_repair_messages(
+    user_issue: str,
+    tickets: list[RetrievedTicket],
+    invalid_answer: str,
+    repair_reason: str,
+) -> list[dict[str, str]]:
+    """Ask the model to repair a specific grounding violation using the same evidence."""
+    messages = build_messages(user_issue, tickets)
+    messages.append(
+        {
+            "role": "assistant",
+            "content": invalid_answer,
+        }
+    )
+    messages.append(
+        {
+            "role": "user",
+            "content": (
+                "Repair the prior answer using only the retrieved tickets. "
+                f"Problem: {repair_reason} Return the four required headings only."
+            ),
+        }
+    )
+    return messages
 
 
 def print_evidence(tickets: list[RetrievedTicket]) -> None:
@@ -133,7 +241,15 @@ def generate_resolution(
             tickets,
         )
 
-    answer = OllamaClient(model=model).chat(build_messages(user_issue, tickets))
+    client = OllamaClient(model=model)
+    generation_tickets = select_generation_evidence(tickets)
+    answer = client.chat(build_messages(user_issue, generation_tickets))
+    if repair_reason := validate_grounded_answer(answer, generation_tickets):
+        answer = client.chat(
+            build_repair_messages(user_issue, generation_tickets, answer, repair_reason)
+        )
+        if repair_reason := validate_grounded_answer(answer, generation_tickets):
+            raise SystemExit(f"The local model returned an invalid grounded response: {repair_reason}")
     return answer, tickets
 
 

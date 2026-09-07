@@ -11,6 +11,7 @@ This project begins with semantic search and now includes a Phase 2 local RAG pr
 | `search.py` | Embeds a new issue and retrieves the nearest historical tickets. |
 | `rag.py` | Retrieves the nearest tickets and sends them as evidence to a local Ollama model. |
 | `app.py` | Provides a lightweight Streamlit interface over the tested RAG pipeline. |
+| `api.py` | Exposes the same RAG service as a validated, documented FastAPI HTTP API. |
 | `evaluate.py` | Runs labeled retrieval checks and reports Recall@K, MRR, and unsupported-query abstention behavior. |
 | `data/evaluation_cases.json` | Version-controlled queries with their expected ticket IDs or an expected abstention. |
 | `docs/INTERVIEW_NOTES.md` | Concise evidence-based talking points and likely interview follow-up answers. |
@@ -29,13 +30,6 @@ Each ticket is represented for embedding as:
 Product: <product>
 Issue: <issue>
 ```
-
-The embedding represents the support symptom a customer would describe. The ticket
-resolution is retained as metadata and supplied to the LLM only after a ticket is
-retrieved. This keeps implementation-specific resolution text from distorting issue
-matching, while preserving it for the evidence-grounded response. The original fields
-are also stored as metadata, so search results are readable now and can later be
-filtered by product.
 
 ## Setup
 
@@ -130,19 +124,6 @@ generated response. They are qualitative checks, not yet a formal evaluation set
 | Direct evidence | `Customer cannot log in after resetting their password` | Identify the stale password-reset session, recommend the SR001 resolution, and cite only `SR001`. | Passed |
 | Unsupported question | `How do I change my organization's logo?` | State that the retrieved evidence is insufficient and do not invent a resolution or ticket citation. | Passed |
 
-### Grounding improvement
-
-The first password-reset response retrieved the correct ticket but cited other,
-merely related authentication tickets and described the direct evidence as uncertain.
-The prompt was then strengthened to distinguish direct matches from topical matches,
-require only directly supporting citations, and prevent evidence limitations that
-contradict the retrieved ticket. The corrected response cited `SR001` alone and
-reported no material evidence limitation.
-
-This before-and-after test is an example of **faithfulness**: a RAG response should
-accurately reflect the evidence that was retrieved, not merely produce a plausible
-answer.
-
 ## Phase 3: Streamlit interface
 
 Phase 3 adds a small web interface without duplicating the AI logic. `app.py` calls
@@ -165,8 +146,8 @@ Starlette internals than the local ChromaDB dependency stack provides.
 
 ## Next phases (not implemented yet)
 
-1. Compare retrieval strategies with the labeled evaluation set.
-2. Add metadata filtering and/or reranking if the metrics identify weak categories.
+1. Add metadata filtering and/or reranking if a larger evaluation set identifies weak categories.
+2. Add authentication, observability, and rate limiting before any public deployment.
 3. Add a hosted-provider implementation for a production deployment comparison.
 
 
@@ -216,6 +197,21 @@ retrieval ranking threshold, not a probability that a resolution is correct. Tre
 it as an initial baseline: expand the evaluation set, inspect failures, then adjust
 and document the threshold if the evidence supports doing so.
 
+The RAG layer also runs Ollama with deterministic settings and checks generated
+answers for a small set of enforceable grounding rules: all required sections must
+be present, cited ticket IDs must have been retrieved, and the response cannot cite
+evidence while claiming that no direct evidence exists. A failed check triggers one
+repair attempt using the same evidence. This is a guardrail, not a replacement for
+human evaluation of semantic correctness.
+
+When one retrieved ticket has a clearly high ranking score and a meaningful lead over
+the runner-up, the RAG layer supplies only that ticket to the LLM as generation
+evidence. The complete top-three retrieval list is still returned by the API and
+displayed in Streamlit for auditability. This keeps directly supported answers from
+citing merely related tickets while retaining multiple candidates for ambiguous cases.
+The high-confidence policy is an initial heuristic and must be evaluated as the
+labeled dataset grows.
+
 ### Baseline evaluation results
 
 After tuning the threshold, the first evaluation run produced:
@@ -253,3 +249,47 @@ For E006, the expected ticket `SR017` moved from third to second place; it did n
 yet become the top result. This is a meaningful improvement, but not a reason to
 claim the issue is solved. The next evidence-based experiment would be a reranker or
 metadata-aware retrieval, evaluated against a larger Data Sync set.
+
+## Phase 5: FastAPI service layer
+
+`api.py` exposes the existing retrieval-and-generation service as a structured HTTP
+API. It deliberately keeps business logic in `search.py` and `rag.py`; FastAPI only
+validates requests, converts internal objects into API responses, and maps unavailable
+local dependencies to an HTTP `503 Service Unavailable` response.
+
+This means the command-line tool, Streamlit UI, and API all use the same retrieval
+and grounding rules. The Streamlit interface continues to call the shared Python
+function directly for local simplicity. A separate client can now call the API without
+depending on Streamlit.
+
+### Run locally
+
+Install the updated dependencies, ensure the index is built, then start the server:
+
+```bash
+python -m pip install -r requirements.txt
+python -m uvicorn api:app --reload
+```
+
+Open `http://127.0.0.1:8000/docs` for FastAPI's interactive API documentation.
+Use `GET /health` to confirm the service is running, then submit `POST /v1/resolutions`
+with an `issue` and optional `top_k`. The server chooses the model through the
+`OLLAMA_MODEL` environment variable, defaulting to `llama3.2:3b`. This keeps client
+requests predictable and prevents a public caller from selecting an unexpected model.
+The interactive documentation provides a browser form for testing the request.
+
+`--reload` is for local development only. A production deployment would add secrets
+management, authentication, rate limits, structured logs and metrics, TLS, and a
+deployment-specific process strategy.
+
+The API attaches an `X-Request-ID` response header and logs each completed request
+as JSON with the method, path, status, duration, and request ID. It deliberately
+does not log the customer's issue text. This supports operational debugging without
+writing support content to standard logs.
+
+Run the focused non-model grounding and API-contract checks with:
+
+```bash
+python -m unittest test_rag.py
+python -m unittest test_api.py
+```

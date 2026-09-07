@@ -9,3 +9,9 @@ sentence-transformers>=3.0,<4.0
 # Streamlit 1.53+ uses Starlette internals that conflict with the Starlette
 # version required by the ChromaDB dependency stack in this local setup.
 streamlit>=1.40,<1.53
+# FastAPI exposes the same tested RAG service as a documented HTTP API.
+# The pinned version is compatible with the Starlette range used by ChromaDB here.
+fastapi>=0.115,<0.116
+uvicorn[standard]>=0.30,<0.36
+# Used by FastAPI's local TestClient for API contract tests.
+httpx>=0.27,<1.0
