@@ -1,0 +1,18 @@
+# Match the Phase 6 environment's direct dependencies and core numeric/model stack.
+# This is not a full transitive lock. Each image records pip freeze at
+# /app/installed-requirements.txt; verify evaluation before updating these pins.
+torch==2.13.0
+transformers==4.57.6
+numpy==2.5.2
+pandas==2.3.3
+chromadb==1.5.9
+llama-index-core==0.12.52.post1
+llama-index-vector-stores-chroma==0.4.2
+llama-index-embeddings-huggingface==0.5.5
+sentence-transformers==3.4.1
+streamlit==1.52.2
+fastapi==0.115.14
+uvicorn==0.35.0
+httpx==0.28.1
+pydantic==2.13.4
+pydantic-settings==2.15.0

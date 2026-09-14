@@ -1,295 +1,177 @@
 # Support Ticket RAG Assistant
 
-This project begins with semantic search and now includes a Phase 2 local RAG prototype. Given a new support issue, it retrieves similar historical tickets and asks a local LLM to produce an evidence-grounded suggested resolution.
+A local assistant that retrieves similar historical support tickets and generates an evidence-grounded suggested resolution. Built with Python, LlamaIndex, ChromaDB, and Ollama, with Streamlit and FastAPI entry points sharing the same RAG logic.
 
-## What each file does
+The corpus contains **30 synthetic support tickets**. This portfolio project demonstrates retrieval evaluation, grounded generation, API reliability, and local Docker operation. No paid inference service or API key is required. Initial dependency and model downloads require internet access.
 
-| File | Purpose |
-| --- | --- |
-| `data/tickets.csv` | Thirty synthetic historical tickets used as the retrieval corpus. |
-| `ingest.py` | Reads the CSV, turns each row into an embedding-ready document, and stores the vectors in ChromaDB. |
-| `search.py` | Embeds a new issue and retrieves the nearest historical tickets. |
-| `rag.py` | Retrieves the nearest tickets and sends them as evidence to a local Ollama model. |
-| `app.py` | Provides a lightweight Streamlit interface over the tested RAG pipeline. |
-| `api.py` | Exposes the same RAG service as a validated, documented FastAPI HTTP API. |
-| `evaluate.py` | Runs labeled retrieval checks and reports Recall@K, MRR, and unsupported-query abstention behavior. |
-| `data/evaluation_cases.json` | Version-controlled queries with their expected ticket IDs or an expected abstention. |
-| `docs/INTERVIEW_NOTES.md` | Concise evidence-based talking points and likely interview follow-up answers. |
-| `requirements.txt` | Python dependencies for the retrieval prototype. |
+## Features
 
-## Retrieval flow
+- Semantic retrieval with `BAAI/bge-small-en-v1.5` and persistent ChromaDB storage.
+- Ticket citations, a relevance gate that can abstain without inference, and a narrow answer-consistency check with one repair attempt.
+- A Streamlit interface and validated FastAPI service using shared retrieval and generation functions.
+- Validated configuration, separate liveness/readiness checks, restrictive CORS, safe errors, and request IDs with logs that omit support-issue text.
+- A non-root Linux container with persistent index and embedding-cache volumes, connected to host Ollama.
+- 40 automated tests, a labeled retrieval evaluation, and separate live inference smoke checks.
 
-```text
-tickets.csv → document text → embedding model → ChromaDB
-new issue → same embedding model → similarity search → top 3 tickets
+## Architecture
+
+```mermaid
+flowchart TD
+    CSV[30 synthetic tickets] --> Ingest[Embed product and issue]
+    Ingest --> Chroma[(Persistent ChromaDB)]
+    UI[Streamlit] --> RAG[Shared RAG service]
+    API[FastAPI] --> RAG
+    CLI[Command line] --> RAG
+    RAG --> Search[Embed query and retrieve tickets]
+    Chroma --> Search
+    Search --> Gate{Relevant evidence?}
+    Gate -->|No| Abstain[Abstain without inference]
+    Gate -->|Yes| Select[Select generation evidence]
+    Select --> Ollama[Local Ollama]
+    Ollama --> Check[Validate answer; at most one repair]
+    Check --> Answer[Suggested resolution with citations]
 ```
 
-Each ticket is represented for embedding as:
+Ticket product and issue text are embedded; resolutions remain metadata for generation. This matches customer symptoms to historical symptoms without embedding internal remediation language.
 
-```text
-Product: <product>
-Issue: <issue>
-```
+Retrieval returns three tickets by default. When one has a sufficiently strong score and lead, only that ticket is supplied to the model. The API and UI still return the complete retrieved evidence for inspection. Otherwise, generation can use multiple tickets.
 
-## Setup
+Chroma is embedded in the application process. Docker packages the API and Python dependencies; Ollama stays on the host to reuse model downloads and hardware support. Streamlit runs separately and calls the shared Python service directly.
 
-Use Python 3.10 or newer. From this project directory:
+## Quick start: Windows / PowerShell
 
-```bash
+Python 3.12 is the validated runtime. Install Ollama and keep it running, then run these commands from the repository directory:
+
+```powershell
 python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+ollama pull llama3.2:3b
+.\.venv\Scripts\python.exe ingest.py
+.\.venv\Scripts\python.exe -m streamlit run app.py
 ```
 
-On Windows with Python 3.12, use ChromaDB 1.x as listed in `requirements.txt`.
-Older ChromaDB 0.6 releases can attempt a local C++ build and fail when Microsoft
-C++ Build Tools are not installed.
+First ingestion downloads the embedding model. Dependencies and model files require local disk space; inference speed depends on hardware. Ingestion leaves an existing nonempty index intact. To intentionally replace it after editing the CSV, run `ingest.py --reset`.
 
-The first run downloads the open-source embedding model (`BAAI/bge-small-en-v1.5`).
+Defaults work without an environment file. For overrides, copy `.env.example` to `.env` and see [configuration and troubleshooting](OPERATIONS.md). Restart processes after changing settings.
 
-## Run the prototype
+For a command-line answer:
 
-Create the persistent index:
-
-```bash
-python ingest.py
+```powershell
+.\.venv\Scripts\python.exe rag.py "Customer cannot log in after resetting their password"
 ```
 
-Search for similar tickets:
+## Example behavior
 
-```bash
-python search.py "Customer cannot log in after resetting their password"
-```
-
-To rebuild the index after editing the CSV:
-
-```bash
-python ingest.py --reset
-```
-
-## Why this architecture?
-
-- **Embeddings** map the meaning of ticket text to vectors, so a query does not need to share exact keywords with a historical ticket.
-- **ChromaDB** provides a simple persistent local vector store for learning and iteration.
-- **LlamaIndex** keeps ingestion and retrieval code modular, while leaving room for a later RAG layer.
-- **No LLM in Phase 1** makes retrieval quality easy to inspect and evaluate before generated answers add another source of error.
-
-## Phase 2: local RAG with Ollama
-
-Phase 2 preserves the tested semantic retrieval path. `rag.py` first retrieves the top three tickets, then provides only those tickets and the user issue to a local LLM. The model is instructed to cite the ticket IDs it used and to state when evidence is insufficient.
+For **“Customer cannot log in after resetting their password”**, the validated local smoke test produced:
 
 ```text
-User issue → semantic retrieval → top 3 tickets → Ollama → grounded response
+Likely Cause
+The likely cause of the issue is a stale password-reset session.
+
+Suggested Resolution
+Clear the stale password-reset session and ask the user to sign in with the new password.
+
+Relevant Historical Ticket IDs
+SR001
+
+Evidence Limitations
+No material limitation in the retrieved evidence.
 ```
 
-### Install Ollama
+The API returned `SR001`, `SR002`, and `SR004` as retrieved evidence while the answer cited only `SR001`. Wording can vary with the model and runtime.
 
-Install Ollama for Windows, then download the small local model used by default:
+For **“How do I change my organization's logo?”**, the relevance gate returned an insufficient-evidence response without asking Ollama to generate a resolution.
 
-```bash
-ollama pull llama3.2:3b
+## HTTP API
+
+Start the API using the same environment and initialized index:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn api:app --host 127.0.0.1 --port 8000 --no-access-log
 ```
 
-No API key or cloud account is needed. The model download requires several gigabytes of local disk space.
+Open [interactive API documentation](http://127.0.0.1:8000/docs). Use a free port if the Docker API is already running.
 
-### Run a grounded resolution
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /health` | Liveness: the API responds independently of dependency readiness. |
+| `GET /health/ready` | Checks the populated Chroma collection and configured Ollama model; returns 503 when unavailable. |
+| `POST /v1/resolutions` | Returns a suggested resolution and retrieved evidence. |
 
-First create the ticket index if it does not already exist:
-
-```bash
-python ingest.py
+```powershell
+$body = @{ issue = "Customer cannot log in after resetting their password"; top_k = 3 } | ConvertTo-Json
+Invoke-RestMethod http://127.0.0.1:8000/v1/resolutions -Method Post -ContentType "application/json" -Body $body
 ```
 
-Then run:
+Responses contain `answer`, `evidence_sufficient`, and `evidence` records with ticket ID, product, issue, resolution, and similarity score. API callers cannot select a model; the server uses `OLLAMA_MODEL`, defaulting to `llama3.2:3b`.
 
-```bash
-python rag.py "Customer cannot log in after resetting their password"
+Validation errors return safe 422 responses, unavailable services return 503, and unexpected errors return a generic 500. An `X-Request-ID` response header connects requests to structured operational logs. CORS allows no cross-origin browser access by default.
+
+## Docker Desktop
+
+With Docker Desktop using Linux containers and Ollama running on the Windows host:
+
+```powershell
+docker compose build
+docker compose run --rm --no-deps api python ingest.py
+docker compose up -d
+docker compose ps
 ```
 
-To use another installed Ollama model for an experiment:
+The API is published only on `127.0.0.1:8000`. Named volumes preserve the index and embedding cache across container replacement. Startup does not automatically ingest tickets or download an Ollama model. Native and container indexes are separate.
 
-```bash
-python rag.py "Customer cannot log in after resetting their password" --model <model-name>
+See [DOCKER.md](DOCKER.md) for container tests, evaluation, host connectivity, shutdown commands, and persistence details.
+
+## Evaluation and verification
+
+The version-controlled evaluation contains **13 cases: 11 supported and 2 unsupported**, tested against the 30-ticket synthetic corpus.
+
+| Metric | Initial embedding: product + issue + resolution | Current embedding: product + issue |
+| --- | ---: | ---: |
+| Recall@3 | 100% (11/11) | 100% (11/11) |
+| Mean reciprocal rank (MRR) | 0.939 | 0.955 |
+| Data Sync MRR | 0.778 | 0.833 |
+| Unsupported-query abstentions | 2/2 | 2/2 |
+
+Recall@3 measures whether the expected ticket appears in the first three results; MRR rewards higher rankings. The symptom-focused experiment moved the expected ticket for case E006 from third to second place, not first. Current results were reproduced inside Linux Docker on September 13, 2026.
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -v
+.\.venv\Scripts\python.exe evaluate.py
 ```
 
-The app prints the generated response and the retrieved ticket IDs with similarity scores. This lets you inspect whether the answer is supported by its evidence.
+The 40 automated tests cover configuration, dependency failures, API contracts, CORS, safe errors, and grounding rules using mocks where appropriate. Retrieval evaluation uses the real embedding model and populated index. Separate live smoke checks confirmed direct-answer and unsupported-query behavior. Docker validation also confirmed persistence after container replacement.
 
-### Manual RAG behavior checks
+## Tradeoffs and limitations
 
-These checks validate both the retrieval path and the grounding behavior of the
-generated response. They are qualitative checks, not yet a formal evaluation set.
+- The small synthetic evaluation is a development check, not evidence of real-world accuracy. Retrieval metrics do not measure every generated answer's correctness.
+- The `0.50` relevance threshold and strongest-ticket policy are initial heuristics. Similarity scores are not probabilities of correctness.
+- Answer validation checks narrow structural and citation rules. It cannot prove semantic grounding or prevent every hallucination; suggested resolutions require human review.
+- Readiness checks model availability, not whether inference will succeed within available memory or latency limits.
+- This is a local deployment with operational safeguards. Authentication, rate limiting, and TLS for public hosting are not implemented.
+- Latency and concurrent-load behavior have not been benchmarked. Docker constraints improve repeatability but are not a complete transitive dependency lock.
 
-| Scenario | Query | Expected behavior | Result |
-| --- | --- | --- | --- |
-| Direct evidence | `Customer cannot log in after resetting their password` | Identify the stale password-reset session, recommend the SR001 resolution, and cite only `SR001`. | Passed |
-| Unsupported question | `How do I change my organization's logo?` | State that the retrieved evidence is insufficient and do not invent a resolution or ticket citation. | Passed |
+## Code map
 
-## Phase 3: Streamlit interface
+| Files | Responsibility |
+| --- | --- |
+| `ingest.py`, `search.py` | Index creation and shared retrieval |
+| `rag.py` | Evidence selection, generation, and answer validation |
+| `app.py`, `api.py` | Streamlit and HTTP entry points |
+| `config.py`, `dependencies.py`, `errors.py` | Configuration, readiness, and safe service errors |
+| `evaluate.py`, `data/evaluation_cases.json` | Labeled retrieval evaluation |
+| `test_*.py` | Automated behavior and API tests |
+| [OPERATIONS.md](OPERATIONS.md) | Settings, troubleshooting, and design decisions |
+| [DOCKER.md](DOCKER.md) | Container architecture and validated local workflow |
 
-Phase 3 adds a small web interface without duplicating the AI logic. `app.py` calls
-the same `generate_resolution()` function used by the command-line application.
-The interface lets a user enter an issue, choose the number of retrieved tickets,
-read the generated response, and inspect the underlying ticket evidence.
+## Future scope
 
-Run the app from the project folder:
+These are potential extensions, not implemented features. The next priority is broader data and evaluation; additional complexity should be justified by measured results.
 
-```bash
-python -m pip install -r requirements.txt
-python -m streamlit run app.py
-```
-
-Streamlit opens the local application in a browser. Ollama must be installed and the
-configured local model must be downloaded before submitting an issue.
-
-The project pins Streamlit below version 1.53 because later releases require newer
-Starlette internals than the local ChromaDB dependency stack provides.
-
-## Next phases (not implemented yet)
-
-1. Add metadata filtering and/or reranking if a larger evaluation set identifies weak categories.
-2. Add authentication, observability, and rate limiting before any public deployment.
-3. Add a hosted-provider implementation for a production deployment comparison.
-
-
-## Manual retrieval checks
-
-These queries were used to confirm that semantic retrieval returns the intended
-historical incident as the top result.
-
-| Query | Expected top ticket | Result |
-| --- | --- | --- |
-| `Customer cannot log in after resetting their password` | `SR001` | Passed |
-| `My credit card payment was declined but the card is valid` | `SR007` | Passed |
-| `The application is showing a service unavailable error` | `SR025` | Passed |
-
-These checks are qualitative validation only. A later evaluation phase will use
-a larger labeled query set and metrics such as Recall@K and MRR.
-
-## Phase 4: evaluation and retrieval safeguards
-
-Phase 4 adds a small, version-controlled evaluation set and an abstention gate.
-This separates two questions that are easy to conflate in a RAG system:
-
-- **Retrieval quality:** did the expected historical ticket appear in the top results?
-- **Generation safety:** was the retrieved evidence relevant enough to ask the LLM for a resolution?
-
-Run the evaluation after building the index:
-
-```bash
-python evaluate.py
-```
-
-The script uses the same `retrieve_tickets()` function as the command-line tool and
-Streamlit interface. It reports:
-
-- **Recall@3**, the share of supported test queries whose expected ticket occurs in
-  the three retrieved results.
-- **MRR (Mean Reciprocal Rank)**, which rewards placing the expected ticket near the
-  top of the ranking.
-- **Unsupported abstentions**, where the retrieval gate should prevent generation.
-- Per-category MRR, to reveal weaker ticket domains.
-
-`rag.py` now checks `has_sufficient_evidence()` before it calls Ollama. The current
-threshold is `0.50`, selected after the first labeled evaluation. In that run, the
-lowest supported-case top score was `0.562`, while the highest unsupported-case top
-score was `0.480`; `0.50` therefore separated those initial examples. It is a
-retrieval ranking threshold, not a probability that a resolution is correct. Treat
-it as an initial baseline: expand the evaluation set, inspect failures, then adjust
-and document the threshold if the evidence supports doing so.
-
-The RAG layer also runs Ollama with deterministic settings and checks generated
-answers for a small set of enforceable grounding rules: all required sections must
-be present, cited ticket IDs must have been retrieved, and the response cannot cite
-evidence while claiming that no direct evidence exists. A failed check triggers one
-repair attempt using the same evidence. This is a guardrail, not a replacement for
-human evaluation of semantic correctness.
-
-When one retrieved ticket has a clearly high ranking score and a meaningful lead over
-the runner-up, the RAG layer supplies only that ticket to the LLM as generation
-evidence. The complete top-three retrieval list is still returned by the API and
-displayed in Streamlit for auditability. This keeps directly supported answers from
-citing merely related tickets while retaining multiple candidates for ambiguous cases.
-The high-confidence policy is an initial heuristic and must be evaluated as the
-labeled dataset grows.
-
-### Baseline evaluation results
-
-After tuning the threshold, the first evaluation run produced:
-
-| Metric | Result | Interpretation |
-| --- | --- | --- |
-| Recall@3 | 100% (11/11) | Each supported query returned its expected ticket in the first three results. |
-| MRR | 0.939 | Most expected tickets ranked first; one Data Sync case ranked lower. |
-| Unsupported abstentions | 2/2 | Both unsupported queries were blocked before the local LLM was called. |
-
-The Data Sync category has an MRR of `0.778`, whereas the other tested categories
-are `1.000`. The next retrieval experiment should focus on why Data Sync tickets
-are semantically close to one another—for example, by testing more labels, metadata
-filters, or a reranker—rather than changing the threshold again without evidence.
-
-### Retrieval experiment: symptom-focused embeddings
-
-The initial index embedded each ticket's product, issue, and resolution together.
-The first measured experiment instead embeds only product and issue, because customer
-queries describe symptoms rather than internal remediation steps. Resolutions remain
-stored as metadata and are still provided to the LLM after retrieval. Rebuild the
-index and rerun `python evaluate.py` to compare this change against the baseline
-above; do not update the baseline metrics unless the new run is recorded.
-
-The experiment improved the recorded metrics without changing the evaluation cases:
-
-| Metric | Baseline | Symptom-focused embedding | Change |
-| --- | ---: | ---: | ---: |
-| Recall@3 | 100% (11/11) | 100% (11/11) | No loss in coverage |
-| MRR | 0.939 | 0.955 | Improved ranking |
-| Data Sync MRR | 0.778 | 0.833 | Improved ranking |
-| Unsupported abstentions | 2/2 | 2/2 | No loss in safe behavior |
-
-For E006, the expected ticket `SR017` moved from third to second place; it did not
-yet become the top result. This is a meaningful improvement, but not a reason to
-claim the issue is solved. The next evidence-based experiment would be a reranker or
-metadata-aware retrieval, evaluated against a larger Data Sync set.
-
-## Phase 5: FastAPI service layer
-
-`api.py` exposes the existing retrieval-and-generation service as a structured HTTP
-API. It deliberately keeps business logic in `search.py` and `rag.py`; FastAPI only
-validates requests, converts internal objects into API responses, and maps unavailable
-local dependencies to an HTTP `503 Service Unavailable` response.
-
-This means the command-line tool, Streamlit UI, and API all use the same retrieval
-and grounding rules. The Streamlit interface continues to call the shared Python
-function directly for local simplicity. A separate client can now call the API without
-depending on Streamlit.
-
-### Run locally
-
-Install the updated dependencies, ensure the index is built, then start the server:
-
-```bash
-python -m pip install -r requirements.txt
-python -m uvicorn api:app --reload
-```
-
-Open `http://127.0.0.1:8000/docs` for FastAPI's interactive API documentation.
-Use `GET /health` to confirm the service is running, then submit `POST /v1/resolutions`
-with an `issue` and optional `top_k`. The server chooses the model through the
-`OLLAMA_MODEL` environment variable, defaulting to `llama3.2:3b`. This keeps client
-requests predictable and prevents a public caller from selecting an unexpected model.
-The interactive documentation provides a browser form for testing the request.
-
-`--reload` is for local development only. A production deployment would add secrets
-management, authentication, rate limits, structured logs and metrics, TLS, and a
-deployment-specific process strategy.
-
-The API attaches an `X-Request-ID` response header and logs each completed request
-as JSON with the method, path, status, duration, and request ID. It deliberately
-does not log the customer's issue text. This supports operational debugging without
-writing support content to standard logs.
-
-Run the focused non-model grounding and API-contract checks with:
-
-```bash
-python -m unittest test_rag.py
-python -m unittest test_api.py
-```
+- **Larger, more diverse ticket dataset:** Grow beyond 30 synthetic tickets to cover more products, issue types, wording variations, and overlapping symptoms. Include ambiguous, incomplete, and unsupported requests. Explore appropriately licensed public data or authorized, de-identified support records, with checks for sensitive information and duplicates.
+- **Stronger evaluation:** Build a separate held-out query set that is not used to tune retrieval thresholds or prompts. Keep near-duplicate examples out of tuning/test splits. Measure retrieval ranking and abstention errors alongside human-reviewed answer correctness, citation support, and completeness.
+- **Retrieval improvements:** Compare metadata filtering, keyword-plus-semantic retrieval, and reranking against the current baseline on the expanded evaluation. Add them only if gains justify their latency and maintenance costs.
+- **Response-time optimization:** Benchmark cold-start and warm-request latency, separating retrieval, generation, and repair time. Investigate reusing the embedding model and other expensive resources, then verify that quality does not regress.
+- **Local model comparisons:** Evaluate alternative Ollama models for answer quality, latency, and memory requirements while retaining a free local development path.
+- **Support workflow feedback:** Let reviewers flag unsupported suggestions and record whether a proposed resolution was useful. Use reviewed feedback to create new evaluation cases before changing the system.
+- **Deployment safeguards:** Before public hosting, add authentication, authorization, rate limiting, TLS, and operational monitoring. If private tickets are introduced, enforce access restrictions during retrieval as well as at the API boundary.

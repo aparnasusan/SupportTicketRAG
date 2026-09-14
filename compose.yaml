@@ -1,0 +1,29 @@
+name: support-ticket-rag
+
+services:
+  api:
+    build: .
+    image: support-ticket-rag:local
+    init: true
+    ports:
+      - "127.0.0.1:${SUPPORT_API_PORT:-8000}:8000"
+    environment:
+      # Do not inherit the host .env's Windows storage path or localhost URL.
+      CHROMA_PATH: /app/storage/chroma
+      CHROMA_COLLECTION: ${CHROMA_COLLECTION:-support_tickets}
+      OLLAMA_BASE_URL: ${DOCKER_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
+      OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-120}
+      HEALTHCHECK_TIMEOUT_SECONDS: ${HEALTHCHECK_TIMEOUT_SECONDS:-3}
+      CORS_ALLOWED_ORIGINS: '${CORS_ALLOWED_ORIGINS:-[]}'
+    volumes:
+      - chroma-data:/app/storage/chroma
+      - embedding-cache:/home/app/.cache/huggingface
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  chroma-data:
+  embedding-cache:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
 import chromadb
 import pandas as pd
@@ -11,11 +10,9 @@ from llama_index.core import Document, StorageContext, VectorStoreIndex
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.vector_stores.chroma import ChromaVectorStore
 
-PROJECT_DIR = Path(__file__).resolve().parent
+from config import PROJECT_DIR, EMBEDDING_MODEL, get_settings
+
 DATA_PATH = PROJECT_DIR / "data" / "tickets.csv"
-CHROMA_PATH = PROJECT_DIR / "storage" / "chroma"
-COLLECTION_NAME = "support_tickets"
-EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 
 
 def build_retrieval_text(product: str, issue: str) -> str:
@@ -50,21 +47,22 @@ def ticket_to_document(ticket: pd.Series) -> Document:
 
 
 def build_index(reset: bool) -> None:
+    settings = get_settings()
     tickets = pd.read_csv(DATA_PATH)
     required_columns = {"ticket_id", "product", "issue", "resolution"}
     missing = required_columns.difference(tickets.columns)
     if missing:
         raise ValueError(f"tickets.csv is missing required columns: {sorted(missing)}")
 
-    client = chromadb.PersistentClient(path=str(CHROMA_PATH))
+    client = chromadb.PersistentClient(path=str(settings.chroma_path))
     if reset:
         try:
-            client.delete_collection(COLLECTION_NAME)
+            client.delete_collection(settings.chroma_collection)
             print("Removed the existing ticket index.")
         except ValueError:
             pass
 
-    collection = client.get_or_create_collection(COLLECTION_NAME)
+    collection = client.get_or_create_collection(settings.chroma_collection)
     if collection.count() > 0:
         print("An index already exists. Run `python ingest.py --reset` to rebuild it.")
         return
@@ -78,7 +76,7 @@ def build_index(reset: bool) -> None:
         storage_context=storage_context,
         embed_model=embed_model,
     )
-    print(f"Indexed {len(documents)} tickets in {CHROMA_PATH}.")
+    print(f"Indexed {len(documents)} tickets in {settings.chroma_path}.")
 
 
 if __name__ == "__main__":

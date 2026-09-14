@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
+from http.client import HTTPException as HTTPProtocolError
 import re
 from dataclasses import dataclass
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from config import Settings, get_settings
+from errors import ServiceError, IndexUnavailable, OllamaUnavailable, InvalidModelResponse
 from search import RetrievedTicket, has_sufficient_evidence, retrieve_tickets
 
-DEFAULT_OLLAMA_URL = "http://localhost:11434/api/chat"
-DEFAULT_OLLAMA_MODEL = "llama3.2:3b"
 DEFAULT_TEMPERATURE = 0
 DEFAULT_SEED = 42
 # A high-confidence match can be used as the sole generation source while the
@@ -38,7 +38,7 @@ class OllamaClient:
     """
 
     model: str
-    url: str = DEFAULT_OLLAMA_URL
+    settings: Settings | None = None
 
     def chat(self, messages: list[dict[str, str]]) -> str:
         payload = json.dumps(
@@ -50,28 +50,30 @@ class OllamaClient:
                 "options": {"temperature": DEFAULT_TEMPERATURE, "seed": DEFAULT_SEED},
             }
         ).encode("utf-8")
+        settings = self.settings or get_settings()
         request = Request(
-            self.url,
+            settings.ollama_base_url + "/api/chat",
             data=payload,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         try:
-            with urlopen(request, timeout=120) as response:
+            with urlopen(request, timeout=settings.ollama_timeout_seconds) as response:
                 body: dict[str, Any] = json.load(response)
-        except HTTPError as error:
-            details = error.read().decode("utf-8", errors="replace")
-            raise SystemExit(f"Ollama returned HTTP {error.code}: {details}") from error
-        except URLError as error:
-            raise SystemExit(
-                "Cannot reach Ollama. Install Ollama, start it, and run "
-                f"`ollama pull {self.model}` before using rag.py. ({error.reason})"
-            ) from error
+        except (HTTPError, URLError, OSError, HTTPProtocolError) as error:
+            if isinstance(error, HTTPError):
+                error.close()
+            raise OllamaUnavailable() from error
+        except (ValueError, UnicodeError) as error:
+            raise InvalidModelResponse() from error
 
         try:
-            return str(body["message"]["content"]).strip()
-        except (KeyError, TypeError) as error:
-            raise SystemExit(f"Unexpected Ollama response: {body}") from error
+            content = body["message"]["content"]
+            if not isinstance(content, str) or not content.strip():
+                raise ValueError("Expected nonempty text")
+            return content.strip()
+        except (KeyError, TypeError, ValueError) as error:
+            raise InvalidModelResponse() from error
 
 
 def format_evidence(tickets: list[RetrievedTicket]) -> str:
@@ -219,12 +221,13 @@ def print_evidence(tickets: list[RetrievedTicket]) -> None:
 
 
 def generate_resolution(
-    user_issue: str, top_k: int, model: str
+    user_issue: str, top_k: int, model: str, *, settings: Settings | None = None
 ) -> tuple[str, list[RetrievedTicket]]:
     """Retrieve evidence and return a grounded local-model response."""
-    tickets = retrieve_tickets(user_issue, top_k=top_k)
+    settings = settings or get_settings()
+    tickets = retrieve_tickets(user_issue, top_k=top_k, settings=settings)
     if not tickets:
-        raise SystemExit("No historical tickets were retrieved; no answer was generated.")
+        raise IndexUnavailable()
 
     if not has_sufficient_evidence(tickets):
         return (
@@ -241,7 +244,7 @@ def generate_resolution(
             tickets,
         )
 
-    client = OllamaClient(model=model)
+    client = OllamaClient(model=model, settings=settings)
     generation_tickets = select_generation_evidence(tickets)
     answer = client.chat(build_messages(user_issue, generation_tickets))
     if repair_reason := validate_grounded_answer(answer, generation_tickets):
@@ -249,7 +252,7 @@ def generate_resolution(
             build_repair_messages(user_issue, generation_tickets, answer, repair_reason)
         )
         if repair_reason := validate_grounded_answer(answer, generation_tickets):
-            raise SystemExit(f"The local model returned an invalid grounded response: {repair_reason}")
+            raise InvalidModelResponse()
     return answer, tickets
 
 
@@ -268,8 +271,11 @@ if __name__ == "__main__":
     parser.add_argument("--top-k", type=int, default=3, help="Tickets to provide as evidence.")
     parser.add_argument(
         "--model",
-        default=os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL),
-        help=f"Ollama model to use (default: {DEFAULT_OLLAMA_MODEL}).",
+        default=get_settings().ollama_model,
+        help="Installed Ollama model (defaults to server configuration).",
     )
     args = parser.parse_args()
-    run_rag(args.issue, top_k=args.top_k, model=args.model)
+    try:
+        run_rag(args.issue, top_k=args.top_k, model=args.model)
+    except ServiceError as error:
+        parser.exit(1, f"{error}\n")

@@ -4,17 +4,16 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-from pathlib import Path
 
-import chromadb
+import sqlite3
+from chromadb.errors import ChromaError
 from llama_index.core import VectorStoreIndex
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.vector_stores.chroma import ChromaVectorStore
 
-PROJECT_DIR = Path(__file__).resolve().parent
-CHROMA_PATH = PROJECT_DIR / "storage" / "chroma"
-COLLECTION_NAME = "support_tickets"
-EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
+from config import EMBEDDING_MODEL, Settings, get_settings
+from dependencies import open_ticket_collection
+from errors import ServiceError, RetrievalUnavailable
 # This is an initial abstention threshold, calibrated from the Phase 1/2 manual
 # checks. Revisit it after running a larger labeled evaluation set.
 MIN_RETRIEVAL_SCORE = 0.50
@@ -31,20 +30,19 @@ class RetrievedTicket:
     similarity_score: float
 
 
-def retrieve_tickets(issue: str, top_k: int = 3) -> list[RetrievedTicket]:
+def retrieve_tickets(issue: str, top_k: int = 3, *, settings: Settings | None = None) -> list[RetrievedTicket]:
     """Return the closest historical tickets without deciding how to display them."""
-    client = chromadb.PersistentClient(path=str(CHROMA_PATH))
-    try:
-        collection = client.get_collection(COLLECTION_NAME)
-    except ValueError as error:
-        raise SystemExit("No index found. Run `python ingest.py` first.") from error
+    collection = open_ticket_collection(settings or get_settings())
 
-    vector_store = ChromaVectorStore(chroma_collection=collection)
-    index = VectorStoreIndex.from_vector_store(
-        vector_store,
-        embed_model=HuggingFaceEmbedding(model_name=EMBEDDING_MODEL),
-    )
-    results = index.as_retriever(similarity_top_k=top_k).retrieve(issue)
+    try:
+        vector_store = ChromaVectorStore(chroma_collection=collection)
+        index = VectorStoreIndex.from_vector_store(
+            vector_store,
+            embed_model=HuggingFaceEmbedding(model_name=EMBEDDING_MODEL),
+        )
+        results = index.as_retriever(similarity_top_k=top_k).retrieve(issue)
+    except (ChromaError, OSError, sqlite3.Error) as error:
+        raise RetrievalUnavailable() from error
     return [
         RetrievedTicket(
             ticket_id=str(result.node.metadata["ticket_id"]),
@@ -84,4 +82,7 @@ if __name__ == "__main__":
     parser.add_argument("issue", help="Natural-language description of the support issue.")
     parser.add_argument("--top-k", type=int, default=3, help="Number of matching tickets to return.")
     args = parser.parse_args()
-    search(args.issue, top_k=args.top_k)
+    try:
+        search(args.issue, top_k=args.top_k)
+    except ServiceError as error:
+        parser.exit(1, f"{error}\n")

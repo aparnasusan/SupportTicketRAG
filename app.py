@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import os
-
 import streamlit as st
 
-from rag import DEFAULT_OLLAMA_MODEL, generate_resolution
+from config import get_settings
+from errors import ServiceError
+from rag import generate_resolution
 
 st.set_page_config(page_title="Support Ticket RAG Assistant", page_icon="🛠️")
 
@@ -18,7 +18,7 @@ with st.sidebar:
     top_k = st.slider("Historical tickets to retrieve", min_value=1, max_value=5, value=3)
     model = st.text_input(
         "Local Ollama model",
-        value=os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL),
+        value=get_settings().ollama_model,
         help="The model must already be available in Ollama on this computer.",
     )
 
@@ -32,7 +32,7 @@ if st.button("Find resolution", type="primary", disabled=not issue.strip()):
     with st.spinner("Searching historical tickets and generating a grounded response..."):
         try:
             answer, tickets = generate_resolution(issue.strip(), top_k=top_k, model=model.strip())
-        except SystemExit as error:
+        except ServiceError as error:
             st.error(str(error))
         else:
             st.subheader("Evidence-grounded suggested resolution")

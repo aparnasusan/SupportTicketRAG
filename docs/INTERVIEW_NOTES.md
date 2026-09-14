@@ -57,6 +57,6 @@ example rather than generalize. A larger labeled dataset is the right prerequisi
 ### What would you do for production?
 
 Use a larger, privacy-reviewed ticket corpus; expand the labeled evaluation set;
-evaluate retrieval by product and incident type; add observability and feedback;
-then compare filters, hybrid retrieval, and reranking under measured latency and
-quality targets.
+evaluate retrieval by product and incident type; configure the model server-side;
+add authentication, observability, rate limits, and feedback; then compare filters,
+hybrid retrieval, and reranking under measured latency and quality targets.
