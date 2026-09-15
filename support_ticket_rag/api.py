@@ -1,4 +1,5 @@
 """Thin HTTP boundary for the shared local RAG service."""
+
 from __future__ import annotations
 
 import json
@@ -13,15 +14,24 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from config import Settings, get_settings
-from dependencies import check_readiness
-from errors import ServiceError
-from rag import generate_resolution
-from search import RetrievedTicket, has_sufficient_evidence
+from support_ticket_rag.config import Settings, get_settings
+from support_ticket_rag.dependencies import check_readiness
+from support_ticket_rag.errors import ServiceError
+from support_ticket_rag.rag import generate_resolution
+from support_ticket_rag.search import RetrievedTicket, has_sufficient_evidence
+from support_ticket_rag.validation import (
+    MAX_ISSUE_LENGTH,
+    MAX_TOP_K,
+    MIN_ISSUE_LENGTH,
+    MIN_TOP_K,
+    validate_issue,
+    validate_top_k,
+)
 
 
 class JsonFormatter(logging.Formatter):
     """Emit only approved operational fields, never exception or body content."""
+
     converter = time.gmtime
 
     def format(self, record: logging.LogRecord) -> str:
@@ -30,7 +40,15 @@ class JsonFormatter(logging.Formatter):
             "message": record.getMessage(),
             "timestamp": self.formatTime(record, datefmt="%Y-%m-%dT%H:%M:%SZ"),
         }
-        for field in ("event", "request_id", "method", "path", "status_code", "duration_ms", "reason"):
+        for field in (
+            "event",
+            "request_id",
+            "method",
+            "path",
+            "status_code",
+            "duration_ms",
+            "reason",
+        ):
             value = getattr(record, field, None)
             if value is not None:
                 payload[field] = value
@@ -54,18 +72,26 @@ LOGGER = configure_logger()
 class ResolutionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     issue: str = Field(
-        min_length=5, max_length=2_000,
+        min_length=MIN_ISSUE_LENGTH,
+        max_length=MAX_ISSUE_LENGTH,
         description="Natural-language description of the customer's support issue.",
     )
     top_k: int = Field(
-        default=3, ge=1, le=5,
+        default=3,
+        ge=MIN_TOP_K,
+        le=MAX_TOP_K,
         description="Number of historical tickets to retrieve as evidence.",
     )
 
     @field_validator("issue", mode="before")
     @classmethod
     def trim_issue(cls, value):
-        return value.strip() if isinstance(value, str) else value
+        return validate_issue(value)
+
+    @field_validator("top_k", mode="before")
+    @classmethod
+    def valid_top_k(cls, value):
+        return validate_top_k(value)
 
 
 class TicketEvidence(BaseModel):
@@ -98,8 +124,11 @@ class ReadinessResponse(BaseModel):
 
 def to_ticket_evidence(ticket: RetrievedTicket) -> TicketEvidence:
     return TicketEvidence(
-        ticket_id=ticket.ticket_id, product=ticket.product, issue=ticket.issue,
-        resolution=ticket.resolution, similarity_score=ticket.similarity_score,
+        ticket_id=ticket.ticket_id,
+        product=ticket.product,
+        issue=ticket.issue,
+        resolution=ticket.resolution,
+        similarity_score=ticket.similarity_score,
     )
 
 
@@ -107,7 +136,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     """Validate config once; dependency outages are reported through readiness."""
     settings = settings or get_settings()
     application = FastAPI(
-        title="Support Ticket RAG API", version="1.0.0",
+        title="Support Ticket RAG API",
+        version="1.0.0",
         description="Grounded support resolutions using historical tickets and local Ollama.",
     )
     application.state.settings = settings
@@ -127,13 +157,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @application.exception_handler(ServiceError)
     async def unavailable(request: Request, error: ServiceError):
-        LOGGER.warning("resolution_unavailable", extra={
-            "event": "resolution_unavailable", "request_id": request.state.request_id,
-            "reason": error.code,
-        })
-        return JSONResponse(status_code=503, content={
-            "detail": "Resolution service is temporarily unavailable. Check the server logs."
-        })
+        LOGGER.warning(
+            "resolution_unavailable",
+            extra={
+                "event": "resolution_unavailable",
+                "request_id": request.state.request_id,
+                "reason": error.code,
+            },
+        )
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "Resolution service is temporarily unavailable. Check the server logs."
+            },
+        )
 
     @application.middleware("http")
     async def safe_errors(request: Request, call_next) -> Response:
@@ -141,16 +178,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             return await call_next(request)
         except Exception:
-            LOGGER.error("request_failed", extra={
-                "event": "request_failed", "request_id": request.state.request_id,
-                "reason": "internal_error",
-            })
+            LOGGER.error(
+                "request_failed",
+                extra={
+                    "event": "request_failed",
+                    "request_id": request.state.request_id,
+                    "reason": "internal_error",
+                },
+            )
             return JSONResponse(status_code=500, content={"detail": "Internal server error."})
 
     application.add_middleware(
-        CORSMiddleware, allow_origins=list(settings.cors_allowed_origins),
-        allow_credentials=False, allow_methods=["GET", "POST"],
-        allow_headers=["Content-Type", "X-Request-ID"], expose_headers=["X-Request-ID"],
+        CORSMiddleware,
+        allow_origins=list(settings.cors_allowed_origins),
+        allow_credentials=False,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type", "X-Request-ID"],
+        expose_headers=["X-Request-ID"],
     )
 
     # Registered last, therefore outermost: also observes CORS preflights.
@@ -163,19 +207,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             response = await call_next(request)
         except Exception:
-            LOGGER.error("request_failed", extra={
-                "event": "request_failed", "request_id": request_id, "reason": "internal_error",
-            })
+            LOGGER.error(
+                "request_failed",
+                extra={
+                    "event": "request_failed",
+                    "request_id": request_id,
+                    "reason": "internal_error",
+                },
+            )
             response = JSONResponse(status_code=500, content={"detail": "Internal server error."})
         response.headers["X-Request-ID"] = request_id
         # Route templates avoid logging arbitrary URL paths or query strings.
         route = request.scope.get("route")
-        LOGGER.info("request_completed", extra={
-            "event": "request_completed", "request_id": request_id,
-            "method": request.method, "path": getattr(route, "path", "unmatched"),
-            "status_code": response.status_code,
-            "duration_ms": round((time.perf_counter() - started_at) * 1_000, 1),
-        })
+        LOGGER.info(
+            "request_completed",
+            extra={
+                "event": "request_completed",
+                "request_id": request_id,
+                "method": request.method,
+                "path": getattr(route, "path", "unmatched"),
+                "status_code": response.status_code,
+                "duration_ms": round((time.perf_counter() - started_at) * 1_000, 1),
+            },
+        )
         return response
 
     @application.get("/health", response_model=HealthResponse, tags=["operations"])
@@ -183,8 +237,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return HealthResponse(status="ok")
 
     @application.get(
-        "/health/ready", response_model=ReadinessResponse,
-        response_model_exclude_none=True, tags=["operations"],
+        "/health/ready",
+        response_model=ReadinessResponse,
+        response_model_exclude_none=True,
+        tags=["operations"],
         responses={503: {"model": ReadinessResponse, "description": "Dependencies unavailable"}},
     )
     def readiness_check(response: Response):
@@ -194,15 +250,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return result
 
     @application.post(
-        "/v1/resolutions", response_model=ResolutionResponse, tags=["resolutions"],
+        "/v1/resolutions",
+        response_model=ResolutionResponse,
+        tags=["resolutions"],
         responses={503: {"description": "Resolution service unavailable"}},
     )
     def create_resolution(request: ResolutionRequest) -> ResolutionResponse:
         answer, tickets = generate_resolution(
-            request.issue, top_k=request.top_k, model=settings.ollama_model, settings=settings,
+            request.issue,
+            top_k=request.top_k,
+            model=settings.ollama_model,
+            settings=settings,
         )
         return ResolutionResponse(
-            answer=answer, evidence_sufficient=has_sufficient_evidence(tickets),
+            answer=answer,
+            evidence_sufficient=has_sufficient_evidence(tickets),
             evidence=[to_ticket_evidence(ticket) for ticket in tickets],
         )
 

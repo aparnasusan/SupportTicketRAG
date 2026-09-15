@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import streamlit as st
 
-from config import get_settings
-from errors import ServiceError
-from rag import generate_resolution
+from support_ticket_rag.config import get_settings
+from support_ticket_rag.errors import ServiceError
+from support_ticket_rag.rag import generate_resolution
+from support_ticket_rag.validation import (
+    MAX_ISSUE_LENGTH,
+    MAX_TOP_K,
+    MIN_TOP_K,
+    InputValidationError,
+)
 
 st.set_page_config(page_title="Support Ticket RAG Assistant", page_icon="🛠️")
 
@@ -15,7 +21,9 @@ st.caption("Retrieve historical support tickets and generate an evidence-grounde
 
 with st.sidebar:
     st.header("Retrieval settings")
-    top_k = st.slider("Historical tickets to retrieve", min_value=1, max_value=5, value=3)
+    top_k = st.slider(
+        "Historical tickets to retrieve", min_value=MIN_TOP_K, max_value=MAX_TOP_K, value=3
+    )
     model = st.text_input(
         "Local Ollama model",
         value=get_settings().ollama_model,
@@ -26,13 +34,14 @@ issue = st.text_area(
     "Describe a technical support issue",
     placeholder="Example: Customer cannot log in after resetting their password.",
     height=120,
+    max_chars=MAX_ISSUE_LENGTH,
 )
 
 if st.button("Find resolution", type="primary", disabled=not issue.strip()):
     with st.spinner("Searching historical tickets and generating a grounded response..."):
         try:
             answer, tickets = generate_resolution(issue.strip(), top_k=top_k, model=model.strip())
-        except ServiceError as error:
+        except (ServiceError, InputValidationError) as error:
             st.error(str(error))
         else:
             st.subheader("Evidence-grounded suggested resolution")

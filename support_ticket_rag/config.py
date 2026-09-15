@@ -1,4 +1,5 @@
 """Validated operational configuration shared by every entry point."""
+
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -6,7 +7,9 @@ from urllib.parse import urlsplit
 from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict, SettingsError
 
-PROJECT_DIR = Path(__file__).resolve().parent
+from support_ticket_rag.validation import validate_model
+
+PROJECT_DIR = Path(__file__).resolve().parent.parent
 # Changing embeddings requires rebuilding and evaluating the index.
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 
@@ -16,11 +19,18 @@ def validate_origin(value: str) -> str:
     value = value.strip()
     parts = urlsplit(value)
     if (
-        parts.scheme not in {"http", "https"} or not parts.hostname
-        or parts.username is not None or parts.password is not None
-        or parts.path not in {"", "/"} or parts.query or parts.fragment
-        or "*" in value or any(c.isspace() for c in value)
-        or "?" in value or "#" in value or "\\" in value
+        parts.scheme not in {"http", "https"}
+        or not parts.hostname
+        or parts.username is not None
+        or parts.password is not None
+        or parts.path not in {"", "/"}
+        or parts.query
+        or parts.fragment
+        or "*" in value
+        or any(c.isspace() for c in value)
+        or "?" in value
+        or "#" in value
+        or "\\" in value
     ):
         raise ValueError("must be an explicit HTTP(S) origin")
     _ = parts.port  # Also rejects malformed and out-of-range ports.
@@ -29,8 +39,11 @@ def validate_origin(value: str) -> str:
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=PROJECT_DIR / ".env", env_file_encoding="utf-8",
-        extra="ignore", frozen=True, hide_input_in_errors=True,
+        env_file=PROJECT_DIR / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        frozen=True,
+        hide_input_in_errors=True,
     )
     chroma_path: Path = PROJECT_DIR / "storage" / "chroma"
     chroma_collection: str = "support_tickets"
@@ -48,7 +61,12 @@ class Settings(BaseSettings):
         path = Path(value).expanduser()
         return (path if path.is_absolute() else PROJECT_DIR / path).resolve()
 
-    @field_validator("chroma_collection", "ollama_model")
+    @field_validator("ollama_model")
+    @classmethod
+    def model_name(cls, value: str) -> str:
+        return validate_model(value)
+
+    @field_validator("chroma_collection")
     @classmethod
     def nonblank(cls, value: str) -> str:
         value = value.strip()
@@ -79,4 +97,6 @@ def get_settings() -> Settings:
         fields = sorted({str(item["loc"][0]) for item in error.errors()})
         raise ConfigurationError("Invalid configuration fields: " + ", ".join(fields)) from None
     except SettingsError:
-        raise ConfigurationError("Invalid environment configuration; check .env value formats.") from None
+        raise ConfigurationError(
+            "Invalid environment configuration; check .env value formats."
+        ) from None

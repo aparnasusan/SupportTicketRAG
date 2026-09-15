@@ -1,15 +1,16 @@
 """Lightweight readiness probes: no ingestion, embeddings, or generation."""
+
 import json
-from http.client import HTTPException as HTTPProtocolError
 import sqlite3
+from http.client import HTTPException as HTTPProtocolError
 from urllib.error import URLError
 from urllib.request import urlopen
 
 import chromadb
 from chromadb.errors import ChromaError, NotFoundError
 
-from config import Settings
-from errors import IndexUnavailable, RetrievalUnavailable, ServiceError
+from support_ticket_rag.config import Settings
+from support_ticket_rag.errors import IndexUnavailable, RetrievalUnavailable, ServiceError
 
 
 def open_ticket_collection(settings: Settings):

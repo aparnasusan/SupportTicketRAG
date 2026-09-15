@@ -4,16 +4,27 @@ from __future__ import annotations
 
 import argparse
 import json
-from http.client import HTTPException as HTTPProtocolError
 import re
 from dataclasses import dataclass
+from http.client import HTTPException as HTTPProtocolError
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from config import Settings, get_settings
-from errors import ServiceError, IndexUnavailable, OllamaUnavailable, InvalidModelResponse
-from search import RetrievedTicket, has_sufficient_evidence, retrieve_tickets
+from support_ticket_rag.config import Settings, get_settings
+from support_ticket_rag.errors import (
+    IndexUnavailable,
+    InvalidModelResponse,
+    OllamaUnavailable,
+    ServiceError,
+)
+from support_ticket_rag.search import RetrievedTicket, has_sufficient_evidence, retrieve_tickets
+from support_ticket_rag.validation import (
+    InputValidationError,
+    validate_issue,
+    validate_model,
+    validate_top_k,
+)
 
 DEFAULT_TEMPERATURE = 0
 DEFAULT_SEED = 42
@@ -140,8 +151,7 @@ Relevant Historical Ticket IDs
 Evidence Limitations
 """
     user_prompt = (
-        f"User issue:\n{user_issue}\n\n"
-        f"Retrieved historical tickets:\n{format_evidence(tickets)}"
+        f"User issue:\n{user_issue}\n\nRetrieved historical tickets:\n{format_evidence(tickets)}"
     )
     return [
         {"role": "system", "content": system_prompt},
@@ -156,7 +166,7 @@ def extract_answer_section(answer: str, heading: str, next_heading: str | None =
         return ""
     start += len(heading)
     end = answer.find(next_heading, start) if next_heading else len(answer)
-    return answer[start:end if end != -1 else len(answer)].strip()
+    return answer[start : end if end != -1 else len(answer)].strip()
 
 
 def validate_grounded_answer(answer: str, tickets: list[RetrievedTicket]) -> str | None:
@@ -170,10 +180,17 @@ def validate_grounded_answer(answer: str, tickets: list[RetrievedTicket]) -> str
     if any(answer.count(heading) != 1 for heading in REQUIRED_HEADINGS):
         return "The response must include each required heading exactly once."
 
-    citations = extract_answer_section(
-        answer, "Relevant Historical Ticket IDs", "Evidence Limitations"
-    )
-    cited_ids = set(re.findall(r"\bSR\d{3}\b", citations))
+    positions = [answer.index(heading) for heading in REQUIRED_HEADINGS]
+    if positions != sorted(positions):
+        return "The response must present the required headings in the specified order."
+
+    for index, heading in enumerate(REQUIRED_HEADINGS):
+        next_heading = REQUIRED_HEADINGS[index + 1] if index + 1 < len(REQUIRED_HEADINGS) else None
+        if not extract_answer_section(answer, heading, next_heading):
+            return f"The response must include nonempty content under {heading}."
+
+    # Ticket references in prose must obey the same rules as the citation section.
+    cited_ids = set(re.findall(r"\bSR\d{3}\b", answer))
     retrieved_ids = {ticket.ticket_id for ticket in tickets}
     if unknown_ids := cited_ids.difference(retrieved_ids):
         return f"The response cited ticket IDs that were not retrieved: {sorted(unknown_ids)}."
@@ -224,6 +241,9 @@ def generate_resolution(
     user_issue: str, top_k: int, model: str, *, settings: Settings | None = None
 ) -> tuple[str, list[RetrievedTicket]]:
     """Retrieve evidence and return a grounded local-model response."""
+    user_issue = validate_issue(user_issue)
+    top_k = validate_top_k(top_k)
+    model = validate_model(model)
     settings = settings or get_settings()
     tickets = retrieve_tickets(user_issue, top_k=top_k, settings=settings)
     if not tickets:
@@ -266,7 +286,9 @@ def run_rag(user_issue: str, top_k: int, model: str) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate a grounded resolution with local Ollama.")
+    parser = argparse.ArgumentParser(
+        description="Generate a grounded resolution with local Ollama."
+    )
     parser.add_argument("issue", help="Natural-language description of the support issue.")
     parser.add_argument("--top-k", type=int, default=3, help="Tickets to provide as evidence.")
     parser.add_argument(
@@ -277,5 +299,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
     try:
         run_rag(args.issue, top_k=args.top_k, model=args.model)
-    except ServiceError as error:
+    except (ServiceError, InputValidationError) as error:
         parser.exit(1, f"{error}\n")

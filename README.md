@@ -11,7 +11,7 @@ The corpus contains **30 synthetic support tickets**. This portfolio project dem
 - A Streamlit interface and validated FastAPI service using shared retrieval and generation functions.
 - Validated configuration, separate liveness/readiness checks, restrictive CORS, safe errors, and request IDs with logs that omit support-issue text.
 - A non-root Linux container with persistent index and embedding-cache volumes, connected to host Ollama.
-- 40 automated tests, a labeled retrieval evaluation, and separate live inference smoke checks.
+- 61 automated tests, a labeled retrieval evaluation, and separate live inference smoke checks.
 
 ## Architecture
 
@@ -46,18 +46,18 @@ Python 3.12 is the validated runtime. Install Ollama and keep it running, then r
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ollama pull llama3.2:3b
-.\.venv\Scripts\python.exe ingest.py
+.\.venv\Scripts\python.exe -m support_ticket_rag.ingest
 .\.venv\Scripts\python.exe -m streamlit run app.py
 ```
 
-First ingestion downloads the embedding model. Dependencies and model files require local disk space; inference speed depends on hardware. Ingestion leaves an existing nonempty index intact. To intentionally replace it after editing the CSV, run `ingest.py --reset`.
+First ingestion downloads the embedding model. Dependencies and model files require local disk space; inference speed depends on hardware. Ingestion leaves an existing nonempty index intact. To intentionally replace it after editing the CSV, run `python -m support_ticket_rag.ingest --reset`.
 
 Defaults work without an environment file. For overrides, copy `.env.example` to `.env` and see [configuration and troubleshooting](OPERATIONS.md). Restart processes after changing settings.
 
 For a command-line answer:
 
 ```powershell
-.\.venv\Scripts\python.exe rag.py "Customer cannot log in after resetting their password"
+.\.venv\Scripts\python.exe -m support_ticket_rag.rag "Customer cannot log in after resetting their password"
 ```
 
 ## Example behavior
@@ -87,7 +87,7 @@ For **“How do I change my organization's logo?”**, the relevance gate return
 Start the API using the same environment and initialized index:
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn api:app --host 127.0.0.1 --port 8000 --no-access-log
+.\.venv\Scripts\python.exe -m uvicorn support_ticket_rag.api:app --host 127.0.0.1 --port 8000 --no-access-log
 ```
 
 Open [interactive API documentation](http://127.0.0.1:8000/docs). Use a free port if the Docker API is already running.
@@ -113,7 +113,7 @@ With Docker Desktop using Linux containers and Ollama running on the Windows hos
 
 ```powershell
 docker compose build
-docker compose run --rm --no-deps api python ingest.py
+docker compose run --rm --no-deps api python -m support_ticket_rag.ingest
 docker compose up -d
 docker compose ps
 ```
@@ -136,11 +136,11 @@ The version-controlled evaluation contains **13 cases: 11 supported and 2 unsupp
 Recall@3 measures whether the expected ticket appears in the first three results; MRR rewards higher rankings. The symptom-focused experiment moved the expected ticket for case E006 from third to second place, not first. Current results were reproduced inside Linux Docker on September 13, 2026.
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -v
-.\.venv\Scripts\python.exe evaluate.py
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -m support_ticket_rag.evaluate
 ```
 
-The 40 automated tests cover configuration, dependency failures, API contracts, CORS, safe errors, and grounding rules using mocks where appropriate. Retrieval evaluation uses the real embedding model and populated index. Separate live smoke checks confirmed direct-answer and unsupported-query behavior. Docker validation also confirmed persistence after container replacement.
+The 61 automated tests cover configuration, dependency failures, API contracts, CORS, safe errors, grounding rules, ingestion preflight/reset handling, evaluation gating, and shared input validation. They use mocks where appropriate. All 61 tests also passed inside the rebuilt Linux image after the package refactor. Retrieval evaluation uses the real embedding model and populated index. Separate live smoke checks confirmed direct-answer and unsupported-query behavior, and container replacement preserved all 30 tickets. See [current container validation status](DOCKER.md#current-validation-status).
 
 ## Tradeoffs and limitations
 
@@ -150,6 +150,18 @@ The 40 automated tests cover configuration, dependency failures, API contracts, 
 - Readiness checks model availability, not whether inference will succeed within available memory or latency limits.
 - This is a local deployment with operational safeguards. Authentication, rate limiting, and TLS for public hosting are not implemented.
 - Latency and concurrent-load behavior have not been benchmarked. Docker constraints improve repeatability but are not a complete transitive dependency lock.
+
+## Repository layout
+
+Application modules live in `support_ticket_rag/`, automated tests in `tests/`, and the Streamlit launcher remains `app.py`. Run module commands from the repository root. Data, `.env`, and storage paths remain relative to that root. This is a source-checkout application; `pyproject.toml` configures tooling rather than a distributable wheel.
+
+```text
+support_ticket_rag/   # API, retrieval, generation, configuration, and CLI modules
+tests/               # Unit and API contract tests
+app.py               # Streamlit launcher
+data/                # Synthetic corpus and labeled queries
+.github/workflows/   # Automated Linux build, tests, and lint checks
+```
 
 ## Code map
 
@@ -175,3 +187,18 @@ These are potential extensions, not implemented features. The next priority is b
 - **Local model comparisons:** Evaluate alternative Ollama models for answer quality, latency, and memory requirements while retaining a free local development path.
 - **Support workflow feedback:** Let reviewers flag unsupported suggestions and record whether a proposed resolution was useful. Use reviewed feedback to create new evaluation cases before changing the system.
 - **Deployment safeguards:** Before public hosting, add authentication, authorization, rate limiting, TLS, and operational monitoring. If private tickets are introduced, enforce access restrictions during retrieval as well as at the API boundary.
+
+## Development checks
+
+Install development tools with `python -m pip install -r requirements-dev.txt`.
+
+```powershell
+python -m ruff check --no-cache support_ticket_rag tests app.py
+python -m ruff format --check --no-cache support_ticket_rag tests app.py
+python -m unittest discover -s tests -v
+python -m support_ticket_rag.evaluate --check --min-mrr 0.9545
+```
+
+Evaluation reports supported false abstentions separately from ranking. Check mode requires full supported recall, zero supported false abstentions, and correct unsupported abstentions. The optional MRR floor above is just below the current unrounded baseline (21/22); the usual displayed value is 0.955.
+
+GitHub Actions runs lint/format checks, builds the Docker image, and runs mocked tests. It does not run live Ollama inference or the real retrieval evaluation; those remain explicit local checks. The workflow will run after these files are pushed.

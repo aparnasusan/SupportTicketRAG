@@ -23,7 +23,9 @@ RUN python -m pip install torch==2.13.0 --index-url https://download.pytorch.org
     && python -m pip check \
     && python -m pip freeze > /app/installed-requirements.txt
 
-COPY *.py ./
+COPY app.py ./
+COPY support_ticket_rag/ ./support_ticket_rag/
+COPY tests/ ./tests/
 COPY data/tickets.csv data/evaluation_cases.json ./data/
 
 USER app
@@ -34,4 +36,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD python -c "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health/ready', timeout=8).close()"
 
-CMD ["python", "-m", "uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--no-access-log"]
+CMD ["python", "-m", "uvicorn", "support_ticket_rag.api:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--no-access-log"]

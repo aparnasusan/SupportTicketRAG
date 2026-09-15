@@ -11,7 +11,7 @@ class ServiceError(Exception):
 
 class IndexUnavailable(ServiceError):
     code = "index_unavailable"
-    message = "The ticket index is missing or empty. Run python ingest.py."
+    message = "The ticket index is missing or empty. Run python -m support_ticket_rag.ingest."
 
 
 class RetrievalUnavailable(ServiceError):
@@ -21,7 +21,9 @@ class RetrievalUnavailable(ServiceError):
 
 class OllamaUnavailable(ServiceError):
     code = "ollama_unavailable"
-    message = "Ollama is unavailable. Check that it is running and the configured model is installed."
+    message = (
+        "Ollama is unavailable. Check that it is running and the configured model is installed."
+    )
 
 
 class InvalidModelResponse(ServiceError):

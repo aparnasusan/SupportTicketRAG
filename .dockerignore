@@ -1,23 +1,15 @@
-# Allowlist the build inputs. Local notes, secrets, Git, virtual environments,
-# and Windows Chroma files never enter the build context.
+# Only source, tests, and synthetic data enter the image.
 **
 !Dockerfile
 !requirements.txt
 !constraints-docker.txt
-!api.py
 !app.py
-!config.py
-!dependencies.py
-!errors.py
-!ingest.py
-!search.py
-!rag.py
-!evaluate.py
-!test_api.py
-!test_config.py
-!test_dependencies.py
-!test_rag.py
-!test_service.py
+!support_ticket_rag/
+support_ticket_rag/*
+!support_ticket_rag/*.py
+!tests/
+tests/*
+!tests/*.py
 !data/
 data/*
 !data/tickets.csv

@@ -1,4 +1,5 @@
 """HTTP contracts use mocked dependencies; no model downloads or inference."""
+
 import io
 import json
 import logging
@@ -7,15 +8,23 @@ import unittest
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
-import api
-from config import Settings
-from errors import IndexUnavailable, OllamaUnavailable, InvalidModelResponse, RetrievalUnavailable
-from search import RetrievedTicket
+
+from support_ticket_rag import api
+from support_ticket_rag.config import Settings
+from support_ticket_rag.errors import (
+    IndexUnavailable,
+    InvalidModelResponse,
+    OllamaUnavailable,
+    RetrievalUnavailable,
+)
+from support_ticket_rag.search import RetrievedTicket
 
 SAMPLE_TICKET = RetrievedTicket(
-    ticket_id="SR001", product="Identity Hub",
+    ticket_id="SR001",
+    product="Identity Hub",
     issue="Users cannot sign in after resetting a password",
-    resolution="Clear the stale password-reset session.", similarity_score=0.61,
+    resolution="Clear the stale password-reset session.",
+    similarity_score=0.61,
 )
 ISSUE = "I cannot sign in after resetting my password"
 ORIGIN = "http://localhost:3000"
@@ -30,7 +39,7 @@ class ApiContractTests(unittest.TestCase):
         self.client = TestClient(api.create_app(self.settings), raise_server_exceptions=False)
         self.addCleanup(self.client.close)
 
-    @patch("api.check_readiness", side_effect=AssertionError("must not probe"))
+    @patch("support_ticket_rag.api.check_readiness", side_effect=AssertionError("must not probe"))
     def test_liveness_is_independent(self, probe):
         response = self.client.get("/health")
         self.assertEqual(response.status_code, 200)
@@ -38,7 +47,7 @@ class ApiContractTests(unittest.TestCase):
         self.assertTrue(response.headers["X-Request-ID"])
         probe.assert_not_called()
 
-    @patch("api.generate_resolution")
+    @patch("support_ticket_rag.api.generate_resolution")
     def test_resolution_uses_server_model_and_returns_evidence(self, generate):
         generate.return_value = ("Grounded answer", [SAMPLE_TICKET])
         response = self.client.post("/v1/resolutions", json={"issue": ISSUE, "top_k": 1})
@@ -46,15 +55,24 @@ class ApiContractTests(unittest.TestCase):
         self.assertEqual(response.json()["answer"], "Grounded answer")
         self.assertTrue(response.json()["evidence_sufficient"])
         self.assertEqual(response.json()["evidence"][0]["ticket_id"], "SR001")
-        generate.assert_called_once_with(ISSUE, top_k=1, model=self.settings.ollama_model,
-                                         settings=self.settings)
+        generate.assert_called_once_with(
+            ISSUE, top_k=1, model=self.settings.ollama_model, settings=self.settings
+        )
 
-    @patch("api.generate_resolution")
+    @patch("support_ticket_rag.api.generate_resolution")
     def test_validation_boundaries(self, generate):
         for body in [
-            {}, {"issue": "     "}, {"issue": "  ab  "}, {"issue": "x" * 2001},
-            {"issue": ISSUE, "top_k": 0}, {"issue": ISSUE, "top_k": 6},
-            {"issue": ISSUE, "model": "other-model"}, {"issue": None},
+            {},
+            {"issue": "     "},
+            {"issue": "  ab  "},
+            {"issue": "x" * 2001},
+            {"issue": ISSUE, "top_k": 0},
+            {"issue": ISSUE, "top_k": 6},
+            {"issue": ISSUE, "top_k": True},
+            {"issue": ISSUE, "top_k": "3"},
+            {"issue": ISSUE, "top_k": 3.0},
+            {"issue": ISSUE, "model": "other-model"},
+            {"issue": None},
         ]:
             with self.subTest(body=body):
                 response = self.client.post("/v1/resolutions", json=body)
@@ -62,34 +80,50 @@ class ApiContractTests(unittest.TestCase):
                 self.assertTrue(response.headers["X-Request-ID"])
         generate.assert_not_called()
 
-    @patch("api.generate_resolution", return_value=("answer", [SAMPLE_TICKET]))
+    @patch("support_ticket_rag.api.generate_resolution", return_value=("answer", [SAMPLE_TICKET]))
     def test_trimmed_valid_boundaries(self, generate):
         for issue, top_k in [("12345", 1), ("x" * 2000, 5)]:
-            response = self.client.post("/v1/resolutions", json={"issue": " " + issue + " ", "top_k": top_k})
+            response = self.client.post(
+                "/v1/resolutions", json={"issue": " " + issue + " ", "top_k": top_k}
+            )
             self.assertEqual(response.status_code, 200)
             self.assertEqual(generate.call_args.args[0], issue)
 
-    @patch("api.generate_resolution")
+    @patch("support_ticket_rag.api.generate_resolution")
     def test_known_failures_are_safe_503(self, generate):
-        for error in [IndexUnavailable(), RetrievalUnavailable(), OllamaUnavailable(), InvalidModelResponse()]:
+        for error in [
+            IndexUnavailable(),
+            RetrievalUnavailable(),
+            OllamaUnavailable(),
+            InvalidModelResponse(),
+        ]:
             with self.subTest(error=type(error).__name__):
                 generate.side_effect = error
-                response = self.client.post("/v1/resolutions", json={"issue": ISSUE},
-                                            headers={"Origin": ORIGIN, "X-Request-ID": "test-failure"})
+                response = self.client.post(
+                    "/v1/resolutions",
+                    json={"issue": ISSUE},
+                    headers={"Origin": ORIGIN, "X-Request-ID": "test-failure"},
+                )
                 self.assertEqual(response.status_code, 503)
                 self.assertEqual(response.headers["X-Request-ID"], "test-failure")
                 self.assertEqual(response.headers["Access-Control-Allow-Origin"], ORIGIN)
                 self.assertNotIn("Traceback", response.text)
 
-    @patch("api.generate_resolution", side_effect=RuntimeError("PRIVATE-UPSTREAM-CONTENT"))
+    @patch(
+        "support_ticket_rag.api.generate_resolution",
+        side_effect=RuntimeError("PRIVATE-UPSTREAM-CONTENT"),
+    )
     def test_unexpected_errors_and_logs_are_private(self, generate):
         output = io.StringIO()
         handler = logging.StreamHandler(output)
         handler.setFormatter(api.JsonFormatter())
         api.LOGGER.addHandler(handler)
         try:
-            response = self.client.post("/v1/resolutions", json={"issue": "PRIVATE-ISSUE-CONTENT"},
-                                        headers={"Origin": ORIGIN, "X-Request-ID": "correlation-1"})
+            response = self.client.post(
+                "/v1/resolutions",
+                json={"issue": "PRIVATE-ISSUE-CONTENT"},
+                headers={"Origin": ORIGIN, "X-Request-ID": "correlation-1"},
+            )
         finally:
             api.LOGGER.removeHandler(handler)
         self.assertEqual(response.status_code, 500)
@@ -107,8 +141,11 @@ class ApiContractTests(unittest.TestCase):
         response = self.client.post("/v1/resolutions", json={"issue": ISSUE, secret: secret})
         self.assertEqual(response.status_code, 422)
         self.assertNotIn(secret, response.text)
-        response = self.client.post("/v1/resolutions", content='{"issue":"PRIVATE-VALIDATION-CONTENT"',
-                                    headers={"Content-Type": "application/json"})
+        response = self.client.post(
+            "/v1/resolutions",
+            content='{"issue":"PRIVATE-VALIDATION-CONTENT"',
+            headers={"Content-Type": "application/json"},
+        )
         self.assertEqual(response.status_code, 422)
         self.assertNotIn(secret, response.text)
 
@@ -121,7 +158,7 @@ class ApiContractTests(unittest.TestCase):
             else:
                 self.assertRegex(returned, r"^[a-f0-9]{32}$")
 
-    @patch("api.check_readiness")
+    @patch("support_ticket_rag.api.check_readiness")
     def test_readiness_status_and_components(self, probe):
         for component in [None, "chroma", "ollama"]:
             components = {"chroma": {"status": "ok"}, "ollama": {"status": "ok"}}
@@ -135,8 +172,11 @@ class ApiContractTests(unittest.TestCase):
             self.assertTrue(response.headers["X-Request-ID"])
 
     def test_cors_allowlist_and_preflight(self):
-        headers = {"Origin": ORIGIN, "Access-Control-Request-Method": "POST",
-                   "Access-Control-Request-Headers": "content-type,x-request-id"}
+        headers = {
+            "Origin": ORIGIN,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type,x-request-id",
+        }
         response = self.client.options("/v1/resolutions", headers=headers)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["Access-Control-Allow-Origin"], ORIGIN)
@@ -160,7 +200,7 @@ class ApiContractTests(unittest.TestCase):
             response = client.get("/health", headers={"Origin": ORIGIN})
             self.assertNotIn("Access-Control-Allow-Origin", response.headers)
 
-    @patch("api.generate_resolution")
+    @patch("support_ticket_rag.api.generate_resolution")
     def test_abstention_is_a_successful_response(self, generate):
         weak = RetrievedTicket("SR001", "product", "issue", "resolution", 0.40)
         generate.return_value = ("Insufficient evidence", [weak])

@@ -1,0 +1,2 @@
+# Tooling only; application dependencies stay in requirements.txt.
+ruff==0.11.13
